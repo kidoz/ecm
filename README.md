@@ -35,10 +35,12 @@ defaults to cdimagefile plus a .ecm suffix.
 
 UNECM works the same way, but in reverse:
 
-    usage: unecm ecmfile [outputfile]
+    usage: unecm [--cue] ecmfile [outputfile]
 
 "ecmfile" must end in .ecm.  If outputfile is not specified, it defaults
 to ecmfile minus the .ecm suffix.
+
+including --cue allows to create a .cue file
 
 
 Thanks to
