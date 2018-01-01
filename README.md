@@ -51,4 +51,3 @@ Where to find me
 ----------------
 
 email: corlett@lfx.org
-www:   http://lfx.org/~corlett/
