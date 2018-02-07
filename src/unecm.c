@@ -315,6 +315,8 @@ int main(int argc, char **argv) {
     FILE *fin, *fout;
     char *infilename;
     char *outfilename;
+    char *cuefilename;
+    char createcue = 0;
     banner();
     /*
     ** Initialize the ECC/EDC tables
@@ -323,32 +325,38 @@ int main(int argc, char **argv) {
     /*
     ** Check command line
     */
-    if ((argc != 2) && (argc != 3)) {
-        fprintf(stderr, "usage: %s ecmfile [outputfile]\n", argv[0]);
-        return 1;
+    if((argc != 2) && (argc != 3) && (argc != 4)) {
+      fprintf(stderr, "usage: %s [--cue] ecmfile [outputfile]\n", argv[0]);
+      return 1;
+    }
+    /*
+    ** Get cur generation status
+    */
+    if (!strcasecmp(argv[1], "--cue")) {
+      createcue = 1;
     }
     /*
     ** Verify that the input filename is valid
     */
-    infilename = argv[1];
+    infilename = argv[1 + createcue];
     if (strlen(infilename) < 5) {
-        fprintf(stderr, "filename '%s' is too short\n", infilename);
-        return 1;
+      fprintf(stderr, "filename '%s' is too short\n", infilename);
+      return 1;
     }
     if (strcasecmp(infilename + strlen(infilename) - 4, ".ecm")) {
-        fprintf(stderr, "filename must end in .ecm\n");
-        return 1;
+      fprintf(stderr, "filename must end in .ecm\n");
+      return 1;
     }
     /*
     ** Figure out what the output filename should be
     */
-    if (argc == 3) {
-        outfilename = argv[2];
+    if (argc == 3 + createcue) {
+      outfilename = argv[2 + createcue];
     } else {
-        outfilename = malloc(strlen(infilename) - 3);
-        if (!outfilename) abort();
-        memcpy(outfilename, infilename, strlen(infilename) - 4);
-        outfilename[strlen(infilename) - 4] = 0;
+      outfilename = malloc(strlen(infilename) - 3);
+      if (!outfilename) abort();
+      memcpy(outfilename, infilename, strlen(infilename) - 4);
+      outfilename[strlen(infilename) - 4] = 0;
     }
     fprintf(stderr, "Decoding %s to %s.\n", infilename, outfilename);
     /*
@@ -356,14 +364,14 @@ int main(int argc, char **argv) {
     */
     fin = fopen(infilename, "rb");
     if (!fin) {
-        perror(infilename);
-        return 1;
+      perror(infilename);
+      return 1;
     }
     fout = fopen(outfilename, "wb");
     if (!fout) {
-        perror(outfilename);
-        fclose(fin);
-        return 1;
+      perror(outfilename);
+      fclose(fin);
+      return 1;
     }
     /*
     ** Decode
@@ -374,5 +382,25 @@ int main(int argc, char **argv) {
     */
     fclose(fout);
     fclose(fin);
+    /*
+    ** Write cue file
+    */
+    if (createcue) {
+      cuefilename = malloc(strlen(outfilename));
+      if(!cuefilename) abort();
+      memcpy(cuefilename, outfilename, strlen(outfilename));
+      memcpy(cuefilename + strlen(outfilename) - 3, "cue", 3);
+      fout = fopen(cuefilename, "wt");
+      if(!fout) {
+        perror(cuefilename);
+        fclose(fout);
+        return 1;
+      }
+      fwrite("FILE \"", 1, 6, fout);
+      fwrite(outfilename, 1, strlen(outfilename), fout);
+      fwrite("\" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n", 1, 53, fout);
+      fclose(fout);
+    }
     return 0;
-}
+  }
+  
