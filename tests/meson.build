@@ -3,14 +3,14 @@
 test_ecm_exe = executable(
   'test_ecm',
   'test_ecm.c',
-  include_directories: inc,
+  include_directories: [inc, inc_build],
   link_with: eccedc_lib,
 )
 
 test_unecm_exe = executable(
   'test_unecm',
   'test_unecm.c',
-  include_directories: inc,
+  include_directories: [inc, inc_build],
   link_with: eccedc_lib,
 )
 

@@ -1,10 +1,3 @@
-/*
- * eccedc.h - Shared ECC/EDC computation for CD sector encoding/decoding
- *
- * Copyright (C) 2002 Neill Corlett
- * SPDX-License-Identifier: GPL-2.0-or-later
- */
-
 #ifndef ECCEDC_H
 #define ECCEDC_H
 

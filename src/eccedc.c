@@ -1,16 +1,3 @@
-/*
- * eccedc.c - Shared ECC/EDC computation for CD sector encoding/decoding
- *
- * Copyright (C) 2002 Neill Corlett
- * SPDX-License-Identifier: GPL-2.0-or-later
- *
- * Portability notes:
- * - Uses fixed-width integer types from <stdint.h>
- * - No assumptions about byte order
- * - No assumptions about struct packing
- * - No unaligned memory access
- */
-
 #include "eccedc.h"
 #include <string.h>
 

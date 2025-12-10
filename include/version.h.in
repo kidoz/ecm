@@ -1,0 +1,6 @@
+#ifndef ECM_VERSION_H
+#define ECM_VERSION_H
+
+#define ECM_VERSION "@VERSION@"
+
+#endif

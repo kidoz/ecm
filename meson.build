@@ -11,7 +11,15 @@ project(
   ],
 )
 
+# Generate version header
+version_h = configure_file(
+  input: 'include/version.h.in',
+  output: 'version.h',
+  configuration: {'VERSION': meson.project_version()},
+)
+
 inc = include_directories('include')
+inc_build = include_directories('.')
 
 # Shared ECC/EDC library
 eccedc_lib = static_library(
@@ -23,7 +31,7 @@ eccedc_lib = static_library(
 ecm_exe = executable(
   'ecm',
   'src/ecm.c',
-  include_directories: inc,
+  include_directories: [inc, inc_build],
   link_with: eccedc_lib,
   install: true,
 )
@@ -31,7 +39,7 @@ ecm_exe = executable(
 unecm_exe = executable(
   'unecm',
   'src/unecm.c',
-  include_directories: inc,
+  include_directories: [inc, inc_build],
   link_with: eccedc_lib,
   install: true,
 )
