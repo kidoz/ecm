@@ -1,0 +1,86 @@
+Language: C
+BasedOnStyle: LLVM
+
+# Indentation
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+IndentCaseLabels: true
+IndentCaseBlocks: false
+IndentGotoLabels: false
+IndentPPDirectives: None
+NamespaceIndentation: None
+
+# Braces
+BreakBeforeBraces: Attach
+BraceWrapping:
+  AfterFunction: false
+  AfterControlStatement: Never
+  AfterEnum: false
+  AfterStruct: false
+  AfterUnion: false
+  BeforeElse: false
+  BeforeWhile: false
+  SplitEmptyFunction: false
+
+# Line width
+ColumnLimit: 100
+
+# Alignment
+AlignAfterOpenBracket: Align
+AlignConsecutiveAssignments: false
+AlignConsecutiveDeclarations: false
+AlignConsecutiveMacros: true
+AlignEscapedNewlines: Left
+AlignOperands: Align
+AlignTrailingComments: true
+
+# Pointer alignment (uint8_t *ptr)
+PointerAlignment: Right
+DerivePointerAlignment: false
+
+# Spaces
+SpaceAfterCStyleCast: false
+SpaceBeforeAssignmentOperators: true
+SpaceBeforeParens: ControlStatements
+SpaceInEmptyParentheses: false
+SpacesInCStyleCastParentheses: false
+SpacesInParentheses: false
+SpacesInSquareBrackets: false
+SpaceBeforeSquareBrackets: false
+
+# Single-line control
+AllowShortBlocksOnASingleLine: Empty
+AllowShortCaseLabelsOnASingleLine: false
+AllowShortEnumsOnASingleLine: false
+AllowShortFunctionsOnASingleLine: Empty
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+
+# Breaking
+BreakBeforeBinaryOperators: None
+BreakBeforeTernaryOperators: true
+AlwaysBreakAfterReturnType: None
+BinPackArguments: true
+BinPackParameters: true
+
+# Includes
+IncludeBlocks: Preserve
+SortIncludes: false
+
+# Comments
+ReflowComments: true
+SpacesBeforeTrailingComments: 2
+
+# Penalties
+PenaltyBreakAssignment: 2
+PenaltyBreakBeforeFirstCallParameter: 19
+PenaltyBreakComment: 300
+PenaltyBreakFirstLessLess: 120
+PenaltyBreakString: 1000
+PenaltyExcessCharacter: 1000000
+PenaltyReturnTypeOnItsOwnLine: 60
+
+# Macros (preserve formatting)
+AttributeMacros: ['__attribute__']
+StatementMacros: ['TEST', 'PASS', 'FAIL']

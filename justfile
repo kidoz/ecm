@@ -59,10 +59,10 @@ reconfigure:
 wipe:
     meson setup {{build_dir}} --wipe
 
-# Format check (requires clang-format)
+# Format source files (requires clang-format)
 fmt:
-    find src include -name '*.c' -o -name '*.h' | xargs clang-format -i
+    clang-format -i src/*.c include/*.h tests/*.c
 
-# Format check dry run
+# Check formatting without modifying
 fmt-check:
-    find src include -name '*.c' -o -name '*.h' | xargs clang-format --dry-run --Werror
+    clang-format --dry-run --Werror src/*.c include/*.h tests/*.c
