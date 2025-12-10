@@ -292,6 +292,11 @@ static int flush_sector_run(
                     }
                 }
                 break;
+
+            default:
+                /* [TS 17961 5.17 swtchdflt] Invalid type */
+                fprintf(stderr, "Error: invalid sector type\n");
+                return -1;
         }
     }
     return 0;
@@ -337,11 +342,15 @@ static int ecmify(FILE *in, FILE *out) {
     intotallength = (int64_t)endpos;
     progress_reset(&progress, intotallength);
 
-    /* Write magic header */
-    fputc(ECM_MAGIC_E, out);
-    fputc(ECM_MAGIC_C, out);
-    fputc(ECM_MAGIC_M, out);
-    fputc(ECM_MAGIC_NULL, out);
+    /* [TS 17961 5.19 liberr] Write magic header with error checking */
+    if (fputc(ECM_MAGIC_E, out) == EOF ||
+        fputc(ECM_MAGIC_C, out) == EOF ||
+        fputc(ECM_MAGIC_M, out) == EOF ||
+        fputc(ECM_MAGIC_NULL, out) == EOF) {
+        fprintf(stderr, "Error: failed to write magic header\n");
+        free(inputqueue);
+        return 1;
+    }
 
     for (;;) {
         if ((dataavail < SECTOR_SIZE_RAW) && ((int64_t)dataavail < (intotallength - inbufferpos))) {
@@ -417,6 +426,9 @@ static int ecmify(FILE *in, FILE *out) {
                 incheckpos += SECTOR_SIZE_MODE2;
                 inqueuestart += SECTOR_SIZE_MODE2;
                 dataavail -= SECTOR_SIZE_MODE2;
+                break;
+            default:
+                /* [TS 17961 5.17 swtchdflt] Should not reach here */
                 break;
         }
     }

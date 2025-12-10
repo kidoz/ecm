@@ -32,6 +32,10 @@ void eccedc_init(void) {
 }
 
 uint32_t edc_compute(uint32_t edc, const uint8_t *src, size_t size) {
+    /* [TS 17961 5.14 nullref] Check for null pointer */
+    if (src == NULL) {
+        return edc;
+    }
     while (size--) {
         edc = (edc >> 8) ^ edc_lut[(edc ^ (*src++)) & 0xFF];
     }
@@ -39,6 +43,10 @@ uint32_t edc_compute(uint32_t edc, const uint8_t *src, size_t size) {
 }
 
 void edc_compute_block(const uint8_t *src, size_t size, uint8_t *dest) {
+    /* [TS 17961 5.14 nullref] Check for null pointers */
+    if (src == NULL || dest == NULL) {
+        return;
+    }
     uint32_t edc = edc_compute(0, src, size);
     dest[0] = (uint8_t)((edc >> 0) & 0xFF);
     dest[1] = (uint8_t)((edc >> 8) & 0xFF);
@@ -123,6 +131,11 @@ static int ecc_verify_block(
 }
 
 void ecc_generate(uint8_t *sector, int zeroaddress) {
+    /* [TS 17961 5.14 nullref] Check for null pointer */
+    if (sector == NULL) {
+        return;
+    }
+
     uint8_t address[4];
 
     /* Save the address and zero it out if requested */
@@ -162,6 +175,11 @@ void ecc_generate(uint8_t *sector, int zeroaddress) {
 }
 
 int ecc_verify(uint8_t *sector, int zeroaddress, uint8_t *dest) {
+    /* [TS 17961 5.14 nullref] Check for null pointers */
+    if (sector == NULL || dest == NULL) {
+        return 0;
+    }
+
     uint8_t address[4];
     int result;
 
@@ -205,6 +223,11 @@ int ecc_verify(uint8_t *sector, int zeroaddress, uint8_t *dest) {
 }
 
 void eccedc_generate(uint8_t *sector, int type) {
+    /* [TS 17961 5.14 nullref] Check for null pointer */
+    if (sector == NULL) {
+        return;
+    }
+
     switch (type) {
         case SECTOR_TYPE_MODE1:
             /* Compute EDC over bytes 0x000-0x80F */
@@ -225,6 +248,10 @@ void eccedc_generate(uint8_t *sector, int type) {
         case SECTOR_TYPE_MODE2_FORM2:
             /* Compute EDC over bytes 0x010-0x92B */
             edc_compute_block(sector + 0x10, 0x91C, sector + OFFSET_MODE2_FORM2_EDC);
+            break;
+
+        default:
+            /* [TS 17961 5.17 swtchdflt] Invalid type - no operation */
             break;
     }
 }

@@ -238,6 +238,11 @@ static int unecmify(FILE *in, FILE *out, decode_stats_t *stats) {
                             }
                         }
                         break;
+
+                    default:
+                        /* [TS 17961 5.17 swtchdflt] Invalid sector type */
+                        fprintf(stderr, "Error: invalid sector type %u\n", type);
+                        goto corrupt;
                 }
             }
         }
