@@ -1,6 +1,6 @@
 # Maintainer: Your Name <your.email@example.com>
 pkgname=ecm
-pkgver=1.0.0
+pkgver=1.1.0
 pkgrel=1
 pkgdesc="Error Code Modeler - encoder/decoder for CD image ECC/EDC data"
 arch=('x86_64')
