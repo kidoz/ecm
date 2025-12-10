@@ -1,27 +1,34 @@
+# Meson
+build/
+builddir/
+
+# CMake (legacy)
 CMakeCache.txt
-CMakeFiles
-CMakeScripts
-Makefile
+CMakeFiles/
+CMakeScripts/
 cmake_install.cmake
+cmake-build-*/
 install_manifest.txt
-#Verone/
+
+# IDE
 .idea/
 .vs/
-ALL_BUILD.vcxproj
-ALL_BUILD.vcxproj.filters
-ALL_BUILD.vcxproj.user
+.vscode/
+
+# Visual Studio
+*.vcxproj
+*.vcxproj.filters
+*.vcxproj.user
+*.sln
+*.VC.db
 Debug/
-ECM.VC.db
-ECM.sln
-ZERO_CHECK.vcxproj
-ZERO_CHECK.vcxproj.filters
-ZERO_CHECK.vcxproj.user
-ecm.dir/
-ecm.vcxproj
-ecm.vcxproj.filters
-ecm.vcxproj.user
-unecm.dir/
-unecm.vcxproj
-unecm.vcxproj.filters
-unecm.vcxproj.user
+Release/
 x64/
+*.dir/
+
+# Binaries
+ecm
+unecm
+*.exe
+*.o
+*.obj
