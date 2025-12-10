@@ -1,55 +1,117 @@
------------------------------------------------------------------------------
-ECM (Error Code Modeler) encode/decode utilities
-Version 1.0
-Copyright 2002 Neill Corlett
-Distributed under the terms of the GNU GPL; read source code for details
------------------------------------------------------------------------------
+# ECM
 
-Introduction
-------------
+**Error Code Modeler** - Encode/decode utilities for CD image compression
 
-The ECM format allows you to reduce the size of a typical CD image file
-(BIN, CDI, NRG, CCD, or any other format that uses raw sectors; results may
-vary).
+[![License: GPL v2](https://img.shields.io/badge/License-GPL_v2-blue.svg)](https://www.gnu.org/licenses/old-licenses/gpl-2.0.en.html)
+[![C Standard](https://img.shields.io/badge/C-C23-blue.svg)](https://en.cppreference.com/w/c/23)
+[![Build System](https://img.shields.io/badge/Build-Meson-green.svg)](https://mesonbuild.com/)
 
-It works by eliminating the Error Correction/Detection Codes (ECC/EDC) from
-each sector whenever possible.  The encoder automatically adjusts to
-different sector types and automatically skips any headers it encounters.
+## Overview
 
-The results will vary depending on how much redundant ECC/EDC data is
-present.  Note that for "cooked" ISO files, there will be no reduction.
+ECM reduces the size of CD image files (BIN, CDI, NRG, CCD, and other raw sector formats) by eliminating redundant Error Correction/Detection Codes (ECC/EDC) from each sector.
 
+The encoder automatically detects sector types and skips headers. Results vary depending on redundant ECC/EDC data present. Note: "cooked" ISO files will see no reduction.
 
-Setup / Usage
--------------
+## Features
 
-Compile ecm.c and unecm.c if necessary, or use the included Win32 EXE files.
+- Supports Mode 1 and Mode 2 (Form 1/Form 2) CD sectors
+- Automatic sector type detection
+- Lossless compression/decompression
+- Optional CUE file generation
+- Cross-platform (Linux, Windows, macOS)
 
-Run ECM with no parameters to see a simple usage reference:
+## Building
 
-    usage: ecm cdimagefile [ecmfile]
+### Requirements
 
-Where "cdimagefile" is the name of the CD image file, and "ecmfile"
-(optional) is the name of the ECM file.  If you don't specify ecmfile, it
-defaults to cdimagefile plus a .ecm suffix.
+- C23 compatible compiler (GCC 14+, Clang 18+)
+- [Meson](https://mesonbuild.com/) build system
+- [Ninja](https://ninja-build.org/) (recommended)
 
-UNECM works the same way, but in reverse:
+### Build Instructions
 
-    usage: unecm [--cue] ecmfile [outputfile]
+```bash
+# Configure and build
+meson setup build
+meson compile -C build
 
-"ecmfile" must end in .ecm.  If outputfile is not specified, it defaults
-to ecmfile minus the .ecm suffix.
+# Run tests
+meson test -C build
 
-including --cue allows to create a .cue file
+# Install (optional)
+meson install -C build
+```
 
+Or using the `just` command runner:
 
-Thanks to
----------
+```bash
+just build      # Build release
+just rebuild    # Clean and rebuild
+just clean      # Remove build directory
+```
 
-ProtoCat for inspiring me to write this.
+## Usage
 
+### Encoding (ECM)
 
-Where to find me
-----------------
+```bash
+ecm <cdimagefile> [ecmfile]
+```
 
-email: corlett@lfx.org
+| Argument | Description |
+|----------|-------------|
+| `cdimagefile` | Input CD image file (BIN, CDI, NRG, CCD, etc.) |
+| `ecmfile` | Output ECM file (optional, defaults to `<input>.ecm`) |
+
+**Example:**
+
+```bash
+ecm game.bin                  # Creates game.bin.ecm
+ecm game.bin compressed.ecm   # Creates compressed.ecm
+```
+
+### Decoding (UNECM)
+
+```bash
+unecm [--cue] <ecmfile> [outputfile]
+```
+
+| Argument | Description |
+|----------|-------------|
+| `--cue` | Generate a CUE sheet file |
+| `ecmfile` | Input ECM file (must end in `.ecm`) |
+| `outputfile` | Output file (optional, defaults to input without `.ecm`) |
+
+**Example:**
+
+```bash
+unecm game.bin.ecm              # Creates game.bin
+unecm --cue game.bin.ecm        # Creates game.bin and game.cue
+unecm game.bin.ecm restored.bin # Creates restored.bin
+```
+
+## How It Works
+
+ECM analyzes CD image sectors and identifies patterns in ECC/EDC data:
+
+| Sector Type | Size | Description |
+|-------------|------|-------------|
+| Mode 1 | 2352 bytes | Standard data sectors with full ECC/EDC |
+| Mode 2 Form 1 | 2336 bytes | XA data sectors with ECC/EDC |
+| Mode 2 Form 2 | 2336 bytes | XA audio/video sectors (EDC only) |
+| Literal | variable | Non-standard data (stored as-is) |
+
+The encoder strips predictable ECC/EDC bytes; the decoder regenerates them perfectly.
+
+## File Format
+
+See [FORMAT.md](doc/FORMAT.md) for detailed ECM file format specification.
+
+## License
+
+This project is licensed under the **GNU General Public License v2.0** - see the [LICENSE](LICENSE) file for details.
+
+## Credits
+
+- **Original Author:** Neill Corlett (2002)
+- **Contributors:** See [GitHub contributors](../../graphs/contributors)
