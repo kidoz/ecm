@@ -1,3 +1,8 @@
+#ifndef _POSIX_C_SOURCE
+#define _POSIX_C_SOURCE 200809L
+#endif
+#define _FILE_OFFSET_BITS 64
+
 /*
  * Unit tests for unecm.c
  * Uses include-based testing to access static functions without modifying source
@@ -273,6 +278,56 @@ void test_eccedc_generate_mode2_form2(void) {
 }
 
 /*
+ * Test: write_cue_file() appends .cue and selects Mode 1 when no Mode 2 sectors are seen
+ */
+void test_write_cue_file_mode1(void) {
+    TEST(write_cue_file_mode1);
+
+    decode_stats_t stats = {1, 0};
+    const char *outname = "test_output_mode1.bin";
+
+    ASSERT_EQ(0, write_cue_file(outname, &stats));
+
+    FILE *cue = fopen("test_output_mode1.bin.cue", "r");
+    ASSERT_TRUE(cue != NULL);
+
+    char line[128];
+    ASSERT_TRUE(fgets(line, sizeof(line), cue));
+    ASSERT_TRUE(fgets(line, sizeof(line), cue));
+    ASSERT_TRUE(strstr(line, "MODE1/2352") != NULL);
+
+    fclose(cue);
+    remove("test_output_mode1.bin.cue");
+
+    PASS();
+}
+
+/*
+ * Test: write_cue_file() selects Mode 2 when Mode 2 sectors are present
+ */
+void test_write_cue_file_mode2(void) {
+    TEST(write_cue_file_mode2);
+
+    decode_stats_t stats = {0, 1};
+    const char *outname = "test_output_mode2.bin";
+
+    ASSERT_EQ(0, write_cue_file(outname, &stats));
+
+    FILE *cue = fopen("test_output_mode2.bin.cue", "r");
+    ASSERT_TRUE(cue != NULL);
+
+    char line[128];
+    ASSERT_TRUE(fgets(line, sizeof(line), cue));
+    ASSERT_TRUE(fgets(line, sizeof(line), cue));
+    ASSERT_TRUE(strstr(line, "MODE2/2352") != NULL);
+
+    fclose(cue);
+    remove("test_output_mode2.bin.cue");
+
+    PASS();
+}
+
+/*
  * Test: ECC generation produces consistent results
  */
 void test_ecc_consistency(void) {
@@ -325,6 +380,240 @@ void test_constants(void) {
 }
 
 /*
+ * Test: Magic constants are correct
+ */
+void test_magic_constants(void) {
+    TEST(magic_constants);
+
+    ASSERT_EQ('E', ECM_MAGIC_E);
+    ASSERT_EQ('C', ECM_MAGIC_C);
+    ASSERT_EQ('M', ECM_MAGIC_M);
+    ASSERT_EQ(0x00, ECM_MAGIC_NULL);
+
+    PASS();
+}
+
+/*
+ * Test: unecmify rejects invalid magic header
+ */
+void test_unecmify_bad_magic(void) {
+    TEST(unecmify_bad_magic);
+
+    eccedc_init();
+
+    /* Create ECM file with wrong magic */
+    FILE *fin = tmpfile();
+    FILE *fout = tmpfile();
+    ASSERT_TRUE(fin != NULL);
+    ASSERT_TRUE(fout != NULL);
+
+    /* Write wrong magic header */
+    fputc('X', fin);
+    fputc('C', fin);
+    fputc('M', fin);
+    fputc(0x00, fin);
+
+    rewind(fin);
+
+    /* Should fail with wrong magic */
+    int result = unecmify(fin, fout, NULL);
+    ASSERT_TRUE(result != 0);
+
+    fclose(fin);
+    fclose(fout);
+    PASS();
+}
+
+/*
+ * Test: unecmify rejects truncated header
+ */
+void test_unecmify_truncated_header(void) {
+    TEST(unecmify_truncated_header);
+
+    eccedc_init();
+
+    /* Create ECM file with truncated header */
+    FILE *fin = tmpfile();
+    FILE *fout = tmpfile();
+    ASSERT_TRUE(fin != NULL);
+    ASSERT_TRUE(fout != NULL);
+
+    /* Write only 2 bytes of magic */
+    fputc('E', fin);
+    fputc('C', fin);
+
+    rewind(fin);
+
+    /* Should fail with truncated header */
+    int result = unecmify(fin, fout, NULL);
+    ASSERT_TRUE(result != 0);
+
+    fclose(fin);
+    fclose(fout);
+    PASS();
+}
+
+/*
+ * Test: unecmify rejects bad EDC checksum
+ */
+void test_unecmify_bad_checksum(void) {
+    TEST(unecmify_bad_checksum);
+
+    eccedc_init();
+
+    FILE *fin = tmpfile();
+    FILE *fout = tmpfile();
+    ASSERT_TRUE(fin != NULL);
+    ASSERT_TRUE(fout != NULL);
+
+    /* Write valid magic */
+    fputc(ECM_MAGIC_E, fin);
+    fputc(ECM_MAGIC_C, fin);
+    fputc(ECM_MAGIC_M, fin);
+    fputc(ECM_MAGIC_NULL, fin);
+
+    /* Write type 0 (literal), count 4 (3+1) */
+    /* type=0, count-1=3: byte = ((3 >= 32) << 7) | ((3 & 31) << 2) | 0 = 0x0C */
+    fputc(0x0C, fin);
+
+    /* Write 4 literal bytes */
+    fputc(0x01, fin);
+    fputc(0x02, fin);
+    fputc(0x03, fin);
+    fputc(0x04, fin);
+
+    /* Write end marker (type 0, count 0) -> 0xFC = type 0, count-1 = 0x3F means... */
+    /* Actually end marker is when decoded count+1 == 0, so encoded count-1 = 0xFFFFFFFF */
+    /* This is signaled by special encoding - let me check the code... */
+    /* End marker: num == 0xFFFFFFFF after decoding means break */
+    /* To encode 0xFFFFFFFF: count-- makes it 0xFFFFFFFE, then encode */
+    /* Actually let me just use 0x00 type with count encoding for max */
+
+    /* End-of-records: type 0, count 0 -> 0xFC encodes count-1=63 in first byte? No... */
+    /* write_type_count(out, 0, 0) -> count-- = -1 = 0xFFFFFFFF */
+    /* fputc(((0xFFFFFFFF >= 32) << 7) | ((0xFFFFFFFF & 31) << 2) | 0 = 0x80 | 0x7C | 0 = 0xFC */
+    /* Then count >>= 5 -> lots of continuation bytes... */
+
+    /* Let's just write a minimal end marker manually */
+    /* type=0, count-1=0xFFFFFFFF means count=0 in the write_type_count sense */
+    /* First byte: 0x80 | (0x1F << 2) | 0 = 0xFC */
+    fputc(0xFC, fin);
+    /* Need more bytes to encode 0xFFFFFFFF >> 5 = 0x07FFFFFF */
+    fputc(0xFF, fin);
+    fputc(0xFF, fin);
+    fputc(0xFF, fin);
+    fputc(0x7F, fin);
+
+    /* Write wrong EDC checksum */
+    fputc(0x00, fin);
+    fputc(0x00, fin);
+    fputc(0x00, fin);
+    fputc(0x00, fin);
+
+    rewind(fin);
+
+    /* Should fail due to wrong checksum */
+    int result = unecmify(fin, fout, NULL);
+    ASSERT_TRUE(result != 0);
+
+    fclose(fin);
+    fclose(fout);
+    PASS();
+}
+
+/*
+ * Test: unecmify handles empty input (just header + end marker + EDC)
+ */
+void test_unecmify_empty_data(void) {
+    TEST(unecmify_empty_data);
+
+    eccedc_init();
+
+    FILE *fin = tmpfile();
+    FILE *fout = tmpfile();
+    ASSERT_TRUE(fin != NULL);
+    ASSERT_TRUE(fout != NULL);
+
+    /* Write valid magic */
+    fputc(ECM_MAGIC_E, fin);
+    fputc(ECM_MAGIC_C, fin);
+    fputc(ECM_MAGIC_M, fin);
+    fputc(ECM_MAGIC_NULL, fin);
+
+    /* Write end-of-records marker (special encoding for count=0) */
+    /* write_type_count(out, 0, 0): count-- wraps to 0xFFFFFFFF */
+    fputc(0xFC, fin);  /* type=0, first 5 bits of count-1, continuation */
+    fputc(0xFF, fin);
+    fputc(0xFF, fin);
+    fputc(0xFF, fin);
+    fputc(0x7F, fin);  /* final byte, no continuation */
+
+    /* Write correct EDC for empty data (0) */
+    fputc(0x00, fin);
+    fputc(0x00, fin);
+    fputc(0x00, fin);
+    fputc(0x00, fin);
+
+    rewind(fin);
+
+    int result = unecmify(fin, fout, NULL);
+    ASSERT_EQ(0, result);
+
+    /* Output should be empty */
+    fseek(fout, 0, SEEK_END);
+    long size = ftell(fout);
+    ASSERT_EQ(0, size);
+
+    fclose(fin);
+    fclose(fout);
+    PASS();
+}
+
+/*
+ * Test: unecmify detects truncated type/count
+ */
+void test_unecmify_truncated_type_count(void) {
+    TEST(unecmify_truncated_type_count);
+
+    eccedc_init();
+
+    FILE *fin = tmpfile();
+    FILE *fout = tmpfile();
+    ASSERT_TRUE(fin != NULL);
+    ASSERT_TRUE(fout != NULL);
+
+    /* Write valid magic */
+    fputc(ECM_MAGIC_E, fin);
+    fputc(ECM_MAGIC_C, fin);
+    fputc(ECM_MAGIC_M, fin);
+    fputc(ECM_MAGIC_NULL, fin);
+
+    /* Write type/count that requires continuation but EOF before it */
+    fputc(0x80, fin);  /* Continuation bit set, needs more bytes */
+    /* EOF - no more bytes */
+
+    rewind(fin);
+
+    int result = unecmify(fin, fout, NULL);
+    ASSERT_TRUE(result != 0);
+
+    fclose(fin);
+    fclose(fout);
+    PASS();
+}
+
+/*
+ * Test: TYPE_COUNT_MAX_BITS constant
+ */
+void test_type_count_max_bits(void) {
+    TEST(type_count_max_bits);
+
+    ASSERT_EQ(32, TYPE_COUNT_MAX_BITS);
+
+    PASS();
+}
+
+/*
  * Main test runner
  */
 int main(int argc, char **argv) {
@@ -335,6 +624,8 @@ int main(int argc, char **argv) {
 
     printf("Constants Tests:\n");
     test_constants();
+    test_magic_constants();
+    test_type_count_max_bits();
 
     printf("\nEDC Computation Tests:\n");
     test_edc_compute();
@@ -344,9 +635,18 @@ int main(int argc, char **argv) {
     test_eccedc_generate_mode1();
     test_eccedc_generate_mode2_form1();
     test_eccedc_generate_mode2_form2();
+    test_write_cue_file_mode1();
+    test_write_cue_file_mode2();
 
     printf("\nConsistency Tests:\n");
     test_ecc_consistency();
+
+    printf("\nDecoder Error Handling Tests:\n");
+    test_unecmify_bad_magic();
+    test_unecmify_truncated_header();
+    test_unecmify_bad_checksum();
+    test_unecmify_empty_data();
+    test_unecmify_truncated_type_count();
 
     printf("\n=== Results: %d/%d tests passed ===\n", tests_passed, tests_run);
 

@@ -1,7 +1,20 @@
+#ifndef _POSIX_C_SOURCE
+#define _POSIX_C_SOURCE 200809L
+#endif
+#ifndef _FILE_OFFSET_BITS
+#define _FILE_OFFSET_BITS 64
+#endif
+
+#include <sys/types.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+
+#if defined(_WIN32) || defined(_WIN64)
+#define fseeko _fseeki64
+#define ftello _ftelli64
+#endif
 
 #include "eccedc.h"
 #include "version.h"
@@ -118,15 +131,21 @@ static int check_type(uint8_t *sector, int canbetype1) {
 
 /*
  * Encode a type/count combo to output
+ * Returns 0 on success, -1 on write error
  */
-static void write_type_count(FILE *out, unsigned type, unsigned count) {
+static int write_type_count(FILE *out, unsigned type, unsigned count) {
     count--;
-    fputc(((count >= 32) << 7) | ((count & 31) << 2) | type, out);
+    if (fputc(((count >= 32) << 7) | ((count & 31) << 2) | type, out) == EOF) {
+        return -1;
+    }
     count >>= 5;
     while (count) {
-        fputc(((count >= 128) << 7) | (count & 127), out);
+        if (fputc(((count >= 128) << 7) | (count & 127), out) == EOF) {
+            return -1;
+        }
         count >>= 7;
     }
+    return 0;
 }
 
 /*
@@ -183,7 +202,10 @@ static int flush_sector_run(
     uint8_t buf[SECTOR_SIZE_RAW];
     size_t bytes_read;
 
-    write_type_count(out, type, count);
+    if (write_type_count(out, type, count) < 0) {
+        fprintf(stderr, "Error: failed to write output\n");
+        return -1;
+    }
 
     if (type == SECTOR_TYPE_LITERAL) {
         while (count) {
@@ -202,7 +224,10 @@ static int flush_sector_run(
                 return -1;
             }
             count -= b;
-            progress_set_encode(progress, ftell(in));
+            off_t pos = ftello(in);
+            if (pos >= 0) {
+                progress_set_encode(progress, (int64_t)pos);
+            }
         }
         return 0;
     }
@@ -222,7 +247,10 @@ static int flush_sector_run(
                     fprintf(stderr, "Error: failed to write output\n");
                     return -1;
                 }
-                progress_set_encode(progress, ftell(in));
+                off_t pos = ftello(in);
+                if (pos >= 0) {
+                    progress_set_encode(progress, (int64_t)pos);
+                }
                 break;
 
             case SECTOR_TYPE_MODE2_FORM1:
@@ -237,7 +265,12 @@ static int flush_sector_run(
                     fprintf(stderr, "Error: failed to write output\n");
                     return -1;
                 }
-                progress_set_encode(progress, ftell(in));
+                {
+                    off_t pos = ftello(in);
+                    if (pos >= 0) {
+                        progress_set_encode(progress, (int64_t)pos);
+                    }
+                }
                 break;
 
             case SECTOR_TYPE_MODE2_FORM2:
@@ -252,7 +285,12 @@ static int flush_sector_run(
                     fprintf(stderr, "Error: failed to write output\n");
                     return -1;
                 }
-                progress_set_encode(progress, ftell(in));
+                {
+                    off_t pos = ftello(in);
+                    if (pos >= 0) {
+                        progress_set_encode(progress, (int64_t)pos);
+                    }
+                }
                 break;
         }
     }
@@ -272,8 +310,8 @@ static int ecmify(FILE *in, FILE *out) {
     int64_t incheckpos = 0;
     int64_t inbufferpos = 0;
     int64_t intotallength;
-    int inqueuestart = 0;
-    int dataavail = 0;
+    size_t inqueuestart = 0;
+    size_t dataavail = 0;
     unsigned typetally[4] = {0, 0, 0, 0};
     progress_t progress;
     int result = 0;
@@ -285,8 +323,18 @@ static int ecmify(FILE *in, FILE *out) {
         return 1;
     }
 
-    fseek(in, 0, SEEK_END);
-    intotallength = ftell(in);
+    if (fseeko(in, 0, SEEK_END) != 0) {
+        fprintf(stderr, "Error: failed to seek input file\n");
+        free(inputqueue);
+        return 1;
+    }
+    off_t endpos = ftello(in);
+    if (endpos < 0) {
+        fprintf(stderr, "Error: failed to determine input file size\n");
+        free(inputqueue);
+        return 1;
+    }
+    intotallength = (int64_t)endpos;
     progress_reset(&progress, intotallength);
 
     /* Write magic header */
@@ -296,29 +344,34 @@ static int ecmify(FILE *in, FILE *out) {
     fputc(ECM_MAGIC_NULL, out);
 
     for (;;) {
-        if ((dataavail < SECTOR_SIZE_RAW) && (dataavail < (intotallength - inbufferpos))) {
-            int64_t willread = intotallength - inbufferpos;
-            if (willread > (int64_t)((INPUT_QUEUE_SIZE - 4) - (size_t)dataavail)) {
-                willread = (int64_t)((INPUT_QUEUE_SIZE - 4) - (size_t)dataavail);
+        if ((dataavail < SECTOR_SIZE_RAW) && ((int64_t)dataavail < (intotallength - inbufferpos))) {
+            size_t willread = (size_t)(intotallength - inbufferpos);
+            if (willread > (INPUT_QUEUE_SIZE - 4) - dataavail) {
+                willread = (INPUT_QUEUE_SIZE - 4) - dataavail;
             }
             if (inqueuestart) {
-                memmove(inputqueue + 4, inputqueue + 4 + inqueuestart, (size_t)dataavail);
+                memmove(inputqueue + 4, inputqueue + 4 + inqueuestart, dataavail);
                 inqueuestart = 0;
             }
             if (willread) {
                 progress_set_analyze(&progress, inbufferpos);
-                fseek(in, (long)inbufferpos, SEEK_SET);
-                size_t bytes_read = fread(inputqueue + 4 + dataavail, 1, (size_t)willread, in);
-                if ((int64_t)bytes_read != willread) {
-                    fprintf(stderr, "Warning: read fewer bytes than expected\n");
-                    willread = (int64_t)bytes_read;
+                if (fseeko(in, (off_t)inbufferpos, SEEK_SET) != 0) {
+                    fprintf(stderr, "Error: failed to seek input file\n");
+                    result = 1;
+                    goto cleanup;
                 }
-                inbufferpos += willread;
-                dataavail += (int)willread;
+                size_t bytes_read = fread(inputqueue + 4 + dataavail, 1, willread, in);
+                if (bytes_read != willread) {
+                    fprintf(stderr, "Error: failed to read input file\n");
+                    result = 1;
+                    goto cleanup;
+                }
+                inbufferpos += (int64_t)willread;
+                dataavail += willread;
             }
         }
 
-        if (dataavail <= 0) {
+        if (dataavail == 0) {
             break;
         }
 
@@ -330,7 +383,11 @@ static int ecmify(FILE *in, FILE *out) {
 
         if (detecttype != curtype) {
             if (curtypecount) {
-                fseek(in, (long)curtype_in_start, SEEK_SET);
+                if (fseeko(in, (off_t)curtype_in_start, SEEK_SET) != 0) {
+                    fprintf(stderr, "Error: failed to seek input file\n");
+                    result = 1;
+                    goto cleanup;
+                }
                 typetally[curtype] += (unsigned)curtypecount;
                 if (flush_sector_run(&inedc, (unsigned)curtype, (unsigned)curtypecount, in, out, &progress) < 0) {
                     result = 1;
@@ -365,7 +422,11 @@ static int ecmify(FILE *in, FILE *out) {
     }
 
     if (curtypecount) {
-        fseek(in, (long)curtype_in_start, SEEK_SET);
+        if (fseeko(in, (off_t)curtype_in_start, SEEK_SET) != 0) {
+            fprintf(stderr, "Error: failed to seek input file\n");
+            result = 1;
+            goto cleanup;
+        }
         typetally[curtype] += (unsigned)curtypecount;
         if (flush_sector_run(&inedc, (unsigned)curtype, (unsigned)curtypecount, in, out, &progress) < 0) {
             result = 1;
@@ -374,20 +435,31 @@ static int ecmify(FILE *in, FILE *out) {
     }
 
     /* End-of-records indicator */
-    write_type_count(out, 0, 0);
+    if (write_type_count(out, 0, 0) < 0) {
+        fprintf(stderr, "Error: failed to write end marker\n");
+        result = 1;
+        goto cleanup;
+    }
 
     /* Input file EDC (integrity check) */
-    fputc((inedc >> 0) & 0xFF, out);
-    fputc((inedc >> 8) & 0xFF, out);
-    fputc((inedc >> 16) & 0xFF, out);
-    fputc((inedc >> 24) & 0xFF, out);
+    if (fputc((inedc >> 0) & 0xFF, out) == EOF ||
+        fputc((inedc >> 8) & 0xFF, out) == EOF ||
+        fputc((inedc >> 16) & 0xFF, out) == EOF ||
+        fputc((inedc >> 24) & 0xFF, out) == EOF) {
+        fprintf(stderr, "Error: failed to write EDC checksum\n");
+        result = 1;
+        goto cleanup;
+    }
 
     /* Show report */
     fprintf(stderr, "Literal bytes........... %10u\n", typetally[SECTOR_TYPE_LITERAL]);
     fprintf(stderr, "Mode 1 sectors.......... %10u\n", typetally[SECTOR_TYPE_MODE1]);
     fprintf(stderr, "Mode 2 form 1 sectors... %10u\n", typetally[SECTOR_TYPE_MODE2_FORM1]);
     fprintf(stderr, "Mode 2 form 2 sectors... %10u\n", typetally[SECTOR_TYPE_MODE2_FORM2]);
-    fprintf(stderr, "Encoded %lld bytes -> %ld bytes\n", (long long)intotallength, ftell(out));
+    off_t outpos = ftello(out);
+    fprintf(stderr, "Encoded %lld bytes -> %lld bytes\n",
+        (long long)intotallength,
+        (long long)((outpos >= 0) ? outpos : 0));
     fprintf(stderr, "Done.\n");
 
 cleanup:

@@ -1,3 +1,8 @@
+#ifndef _POSIX_C_SOURCE
+#define _POSIX_C_SOURCE 200809L
+#endif
+#define _FILE_OFFSET_BITS 64
+
 /*
  * Unit tests for ecm.c
  * Uses include-based testing to access static functions without modifying source
@@ -221,6 +226,232 @@ void test_constants(void) {
 }
 
 /*
+ * Test: Valid Mode 1 sector is detected correctly
+ */
+void test_check_type_valid_mode1(void) {
+    TEST(check_type_valid_mode1);
+
+    eccedc_init();
+
+    /* Build a complete valid Mode 1 sector */
+    uint8_t sector[SECTOR_SIZE_RAW];
+    memset(sector, 0, sizeof(sector));
+
+    /* Sync pattern */
+    sector[0x00] = SYNC_BYTE_START;
+    for (int i = 1; i <= 10; i++) sector[i] = SYNC_BYTE_MIDDLE;
+    sector[0x0B] = SYNC_BYTE_END;
+
+    /* Address (MSF) */
+    sector[OFFSET_HEADER + 0] = 0x00;
+    sector[OFFSET_HEADER + 1] = 0x02;
+    sector[OFFSET_HEADER + 2] = 0x00;
+
+    /* Mode byte */
+    sector[OFFSET_MODE] = 0x01;
+
+    /* User data */
+    for (int i = 0; i < SECTOR_USER_DATA; i++) {
+        sector[OFFSET_MODE1_DATA + i] = (uint8_t)(i & 0xFF);
+    }
+
+    /* Generate valid ECC/EDC */
+    eccedc_generate(sector, SECTOR_TYPE_MODE1);
+
+    /* Now check_type should detect it as Mode 1 */
+    int type = check_type(sector, 1);
+    ASSERT_EQ(SECTOR_TYPE_MODE1, type);
+
+    PASS();
+}
+
+/*
+ * Test: Mode 2 sector with wrong mode byte is literal
+ */
+void test_check_type_mode2_wrong_mode(void) {
+    TEST(check_type_mode2_wrong_mode);
+
+    eccedc_init();
+
+    uint8_t sector[SECTOR_SIZE_RAW];
+    memset(sector, 0, sizeof(sector));
+
+    /* Valid sync pattern */
+    sector[0x00] = SYNC_BYTE_START;
+    for (int i = 1; i <= 10; i++) sector[i] = SYNC_BYTE_MIDDLE;
+    sector[0x0B] = SYNC_BYTE_END;
+
+    /* Wrong mode byte for Mode 2 */
+    sector[OFFSET_MODE] = 0x03;  /* Invalid mode */
+
+    int type = check_type(sector, 1);
+    ASSERT_EQ(SECTOR_TYPE_LITERAL, type);
+
+    PASS();
+}
+
+/*
+ * Test: Subheader mismatch detected
+ */
+void test_check_type_subheader_mismatch(void) {
+    TEST(check_type_subheader_mismatch);
+
+    eccedc_init();
+
+    uint8_t sector[SECTOR_SIZE_RAW];
+    memset(sector, 0, sizeof(sector));
+
+    /* Valid sync */
+    sector[0x00] = SYNC_BYTE_START;
+    for (int i = 1; i <= 10; i++) sector[i] = SYNC_BYTE_MIDDLE;
+    sector[0x0B] = SYNC_BYTE_END;
+
+    /* Mode 2 */
+    sector[OFFSET_MODE] = 0x02;
+
+    /* Mismatched subheader (bytes 0x10-0x13 != 0x14-0x17) */
+    sector[0x10] = 0x00;
+    sector[0x11] = 0x00;
+    sector[0x12] = 0x08;
+    sector[0x13] = 0x00;
+    /* Different values in copy */
+    sector[0x14] = 0xFF;
+    sector[0x15] = 0xFF;
+    sector[0x16] = 0xFF;
+    sector[0x17] = 0xFF;
+
+    int type = check_type(sector, 1);
+    /* With mismatched subheader, should not be detected as Mode 2 */
+    ASSERT_TRUE(type == SECTOR_TYPE_LITERAL || type == SECTOR_TYPE_MODE1);
+
+    PASS();
+}
+
+/*
+ * Test: write_type_count handles large counts correctly
+ */
+void test_write_type_count_large(void) {
+    TEST(write_type_count_large);
+
+    FILE *f = tmpfile();
+    ASSERT_TRUE(f != NULL);
+
+    /* Test with maximum useful count (close to 0xFFFFFFFF - 1) */
+    /* 1000 sectors - requires multiple continuation bytes */
+    int result = write_type_count(f, SECTOR_TYPE_MODE1, 1000);
+    ASSERT_EQ(0, result);
+
+    /* Verify we can read it back correctly */
+    rewind(f);
+
+    /* Decode the type/count */
+    int c = fgetc(f);
+    unsigned type = (unsigned)(c & 3);
+    unsigned num = (unsigned)((c >> 2) & 0x1F);
+    int bits = 5;
+
+    while (c & 0x80) {
+        c = fgetc(f);
+        ASSERT_TRUE(c != EOF);
+        num |= ((unsigned)(c & 0x7F)) << bits;
+        bits += 7;
+    }
+    num++;  /* Decode adds 1 */
+
+    ASSERT_EQ(SECTOR_TYPE_MODE1, type);
+    ASSERT_EQ(1000, num);
+
+    fclose(f);
+    PASS();
+}
+
+/*
+ * Test: write_type_count returns int for error checking
+ */
+void test_write_type_count_returns_int(void) {
+    TEST(write_type_count_returns_int);
+
+    FILE *f = tmpfile();
+    ASSERT_TRUE(f != NULL);
+
+    /* Successful writes should return 0 */
+    int result = write_type_count(f, SECTOR_TYPE_MODE1, 1);
+    ASSERT_EQ(0, result);
+
+    result = write_type_count(f, SECTOR_TYPE_MODE2_FORM1, 100);
+    ASSERT_EQ(0, result);
+
+    result = write_type_count(f, SECTOR_TYPE_MODE2_FORM2, 10000);
+    ASSERT_EQ(0, result);
+
+    fclose(f);
+    PASS();
+}
+
+/*
+ * Test: Mode 1 sector with wrong EDC fails validation
+ */
+void test_check_type_bad_edc(void) {
+    TEST(check_type_bad_edc);
+
+    eccedc_init();
+
+    uint8_t sector[SECTOR_SIZE_RAW];
+    memset(sector, 0, sizeof(sector));
+
+    /* Valid sync pattern */
+    sector[0x00] = SYNC_BYTE_START;
+    for (int i = 1; i <= 10; i++) sector[i] = SYNC_BYTE_MIDDLE;
+    sector[0x0B] = SYNC_BYTE_END;
+
+    /* Mode 1 */
+    sector[OFFSET_MODE] = 0x01;
+
+    /* Generate valid ECC/EDC */
+    eccedc_generate(sector, SECTOR_TYPE_MODE1);
+
+    /* Corrupt the EDC */
+    sector[OFFSET_MODE1_EDC] ^= 0xFF;
+
+    /* Should not be detected as Mode 1 */
+    int type = check_type(sector, 1);
+    ASSERT_TRUE(type != SECTOR_TYPE_MODE1);
+
+    PASS();
+}
+
+/*
+ * Test: Sector with wrong ECC fails validation
+ */
+void test_check_type_bad_ecc(void) {
+    TEST(check_type_bad_ecc);
+
+    eccedc_init();
+
+    uint8_t sector[SECTOR_SIZE_RAW];
+    memset(sector, 0, sizeof(sector));
+
+    /* Valid sync and mode */
+    sector[0x00] = SYNC_BYTE_START;
+    for (int i = 1; i <= 10; i++) sector[i] = SYNC_BYTE_MIDDLE;
+    sector[0x0B] = SYNC_BYTE_END;
+    sector[OFFSET_MODE] = 0x01;
+
+    /* Generate valid ECC/EDC */
+    eccedc_generate(sector, SECTOR_TYPE_MODE1);
+
+    /* Corrupt the ECC P section */
+    sector[OFFSET_MODE1_ECC_P] ^= 0xFF;
+    sector[OFFSET_MODE1_ECC_P + 1] ^= 0xFF;
+
+    /* Should not be detected as Mode 1 */
+    int type = check_type(sector, 1);
+    ASSERT_TRUE(type != SECTOR_TYPE_MODE1);
+
+    PASS();
+}
+
+/*
  * Main test runner
  */
 int main(int argc, char **argv) {
@@ -238,9 +469,16 @@ int main(int argc, char **argv) {
     printf("\nSector Type Detection Tests:\n");
     test_check_type_literal();
     test_check_type_invalid_sync();
+    test_check_type_valid_mode1();
+    test_check_type_mode2_wrong_mode();
+    test_check_type_subheader_mismatch();
+    test_check_type_bad_edc();
+    test_check_type_bad_ecc();
 
     printf("\nType/Count Encoding Tests:\n");
     test_write_type_count();
+    test_write_type_count_large();
+    test_write_type_count_returns_int();
 
     printf("\nSector Structure Tests:\n");
     test_mode1_structure();
