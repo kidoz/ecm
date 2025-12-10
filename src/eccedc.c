@@ -1,19 +1,16 @@
 #include "eccedc.h"
 #include <string.h>
+#include <threads.h>
 
 /* Lookup tables for ECC/EDC computation */
 static uint8_t ecc_f_lut[256];
 static uint8_t ecc_b_lut[256];
 static uint32_t edc_lut[256];
 
-/* Initialization flag */
-static int tables_initialized = 0;
+/* Thread-safe initialization using C11 call_once */
+static once_flag init_flag = ONCE_FLAG_INIT;
 
-void eccedc_init(void) {
-    if (tables_initialized) {
-        return;
-    }
-
+static void eccedc_init_tables(void) {
     for (uint32_t i = 0; i < 256; i++) {
         /* ECC F/B lookup tables using polynomial 0x11D */
         uint32_t j = (i << 1) ^ (i & 0x80 ? 0x11D : 0);
@@ -27,13 +24,14 @@ void eccedc_init(void) {
         }
         edc_lut[i] = edc;
     }
-
-    tables_initialized = 1;
 }
 
-uint32_t edc_compute(uint32_t edc, const uint8_t *src, size_t size) {
-    /* [TS 17961 5.14 nullref] Check for null pointer */
-    if (src == NULL) {
+void eccedc_init(void) {
+    call_once(&init_flag, eccedc_init_tables);
+}
+
+[[nodiscard]] uint32_t edc_compute(uint32_t edc, const uint8_t *src, size_t size) {
+    if (src == nullptr) {
         return edc;
     }
     while (size--) {
@@ -43,8 +41,7 @@ uint32_t edc_compute(uint32_t edc, const uint8_t *src, size_t size) {
 }
 
 void edc_compute_block(const uint8_t *src, size_t size, uint8_t *dest) {
-    /* [TS 17961 5.14 nullref] Check for null pointers */
-    if (src == NULL || dest == NULL) {
+    if (src == nullptr || dest == nullptr) {
         return;
     }
     uint32_t edc = edc_compute(0, src, size);
@@ -85,10 +82,9 @@ static void ecc_compute_block(uint8_t *src, uint32_t major_count, uint32_t minor
 
 /*
  * Internal: Verify ECC for a block (can do either P or Q)
- * Returns 1 if ECC matches, 0 otherwise
  */
-static int ecc_verify_block(uint8_t *src, uint32_t major_count, uint32_t minor_count,
-                            uint32_t major_mult, uint32_t minor_inc, uint8_t *dest) {
+[[nodiscard]] static bool ecc_verify_block(uint8_t *src, uint32_t major_count, uint32_t minor_count,
+                                           uint32_t major_mult, uint32_t minor_inc, uint8_t *dest) {
     uint32_t size = major_count * minor_count;
 
     for (uint32_t major = 0; major < major_count; major++) {
@@ -109,127 +105,122 @@ static int ecc_verify_block(uint8_t *src, uint32_t major_count, uint32_t minor_c
 
         ecc_a = ecc_b_lut[ecc_f_lut[ecc_a] ^ ecc_b];
         if (dest[major] != ecc_a) {
-            return 0;
+            return false;
         }
         if (dest[major + major_count] != (ecc_a ^ ecc_b)) {
-            return 0;
+            return false;
         }
     }
-    return 1;
+    return true;
 }
 
-void ecc_generate(uint8_t *sector, int zeroaddress) {
-    /* [TS 17961 5.14 nullref] Check for null pointer */
-    if (sector == NULL) {
+/*
+ * Save address field and optionally zero it
+ */
+static void save_address(uint8_t *sector, uint8_t *address, bool zero) {
+    for (int i = 0; i < ADDRESS_FIELD_SIZE; i++) {
+        address[i] = sector[ADDRESS_FIELD_OFFSET + i];
+        if (zero) {
+            sector[ADDRESS_FIELD_OFFSET + i] = 0;
+        }
+    }
+}
+
+/*
+ * Restore address field
+ */
+static void restore_address(uint8_t *sector, const uint8_t *address) {
+    for (int i = 0; i < ADDRESS_FIELD_SIZE; i++) {
+        sector[ADDRESS_FIELD_OFFSET + i] = address[i];
+    }
+}
+
+void ecc_generate(uint8_t *sector, bool zeroaddress) {
+    if (sector == nullptr) {
         return;
     }
 
-    uint8_t address[4];
+    uint8_t address[ADDRESS_FIELD_SIZE];
 
-    /* Save the address and zero it out if requested */
     if (zeroaddress) {
-        for (int i = 0; i < 4; i++) {
-            address[i] = sector[12 + i];
-            sector[12 + i] = 0;
-        }
+        save_address(sector, address, true);
     }
 
     /* Compute ECC P code */
-    ecc_compute_block(sector + 0xC, /* src */
-                      86,           /* major_count */
-                      24,           /* minor_count */
-                      2,            /* major_mult */
-                      86,           /* minor_inc */
+    ecc_compute_block(sector + ECC_DATA_OFFSET, ECC_P_MAJOR, ECC_P_MINOR, ECC_P_MULT, ECC_P_INC,
                       sector + OFFSET_MODE1_ECC_P);
 
     /* Compute ECC Q code */
-    ecc_compute_block(sector + 0xC, /* src */
-                      52,           /* major_count */
-                      43,           /* minor_count */
-                      86,           /* major_mult */
-                      88,           /* minor_inc */
+    ecc_compute_block(sector + ECC_DATA_OFFSET, ECC_Q_MAJOR, ECC_Q_MINOR, ECC_Q_MULT, ECC_Q_INC,
                       sector + OFFSET_MODE1_ECC_Q);
 
-    /* Restore the address */
     if (zeroaddress) {
-        for (int i = 0; i < 4; i++) {
-            sector[12 + i] = address[i];
-        }
+        restore_address(sector, address);
     }
 }
 
-int ecc_verify(uint8_t *sector, int zeroaddress, uint8_t *dest) {
-    /* [TS 17961 5.14 nullref] Check for null pointers */
-    if (sector == NULL || dest == NULL) {
-        return 0;
+[[nodiscard]] bool ecc_verify(uint8_t *sector, bool zeroaddress, uint8_t *dest) {
+    if (sector == nullptr || dest == nullptr) {
+        return false;
     }
 
-    uint8_t address[4];
-    int result;
+    uint8_t address[ADDRESS_FIELD_SIZE];
 
-    /* Save the address and zero it out if requested */
     if (zeroaddress) {
-        for (int i = 0; i < 4; i++) {
-            address[i] = sector[12 + i];
-            sector[12 + i] = 0;
-        }
+        save_address(sector, address, true);
     }
 
     /* Verify ECC P code */
-    if (!ecc_verify_block(sector + 0xC, 86, 24, 2, 86,
-                          dest + (OFFSET_MODE1_ECC_P - OFFSET_MODE1_ECC_P))) {
+    if (!ecc_verify_block(sector + ECC_DATA_OFFSET, ECC_P_MAJOR, ECC_P_MINOR, ECC_P_MULT, ECC_P_INC,
+                          dest)) {
         if (zeroaddress) {
-            for (int i = 0; i < 4; i++) {
-                sector[12 + i] = address[i];
-            }
+            restore_address(sector, address);
         }
-        return 0;
+        return false;
     }
 
     /* Verify ECC Q code */
-    result = ecc_verify_block(sector + 0xC, 52, 43, 86, 88,
-                              dest + (OFFSET_MODE1_ECC_Q - OFFSET_MODE1_ECC_P));
+    bool result = ecc_verify_block(sector + ECC_DATA_OFFSET, ECC_Q_MAJOR, ECC_Q_MINOR, ECC_Q_MULT,
+                                   ECC_Q_INC, dest + (OFFSET_MODE1_ECC_Q - OFFSET_MODE1_ECC_P));
 
-    /* Restore the address */
     if (zeroaddress) {
-        for (int i = 0; i < 4; i++) {
-            sector[12 + i] = address[i];
-        }
+        restore_address(sector, address);
     }
 
     return result;
 }
 
-void eccedc_generate(uint8_t *sector, int type) {
-    /* [TS 17961 5.14 nullref] Check for null pointer */
-    if (sector == NULL) {
+void eccedc_generate(uint8_t *sector, sector_type_t type) {
+    if (sector == nullptr) {
         return;
     }
 
     switch (type) {
         case SECTOR_TYPE_MODE1:
             /* Compute EDC over bytes 0x000-0x80F */
-            edc_compute_block(sector + 0x00, 0x810, sector + OFFSET_MODE1_EDC);
+            edc_compute_block(sector, OFFSET_MODE1_EDC, sector + OFFSET_MODE1_EDC);
             /* Write zero bytes to reserved area */
             memset(sector + OFFSET_MODE1_RESERVED, 0, RESERVED_SIZE);
             /* Generate ECC P/Q codes */
-            ecc_generate(sector, 0);
+            ecc_generate(sector, false);
             break;
 
         case SECTOR_TYPE_MODE2_FORM1:
             /* Compute EDC over bytes 0x010-0x817 */
-            edc_compute_block(sector + 0x10, 0x808, sector + OFFSET_MODE2_FORM1_EDC);
+            edc_compute_block(sector + OFFSET_MODE2_SUBHEADER, MODE2_EDC_OFFSET,
+                              sector + OFFSET_MODE2_FORM1_EDC);
             /* Generate ECC P/Q codes (with address zeroing) */
-            ecc_generate(sector, 1);
+            ecc_generate(sector, true);
             break;
 
         case SECTOR_TYPE_MODE2_FORM2:
             /* Compute EDC over bytes 0x010-0x92B */
-            edc_compute_block(sector + 0x10, 0x91C, sector + OFFSET_MODE2_FORM2_EDC);
+            edc_compute_block(sector + OFFSET_MODE2_SUBHEADER, MODE2_FORM2_EDC_OFFSET,
+                              sector + OFFSET_MODE2_FORM2_EDC);
             break;
 
         default:
-            /* [TS 17961 5.17 swtchdflt] Invalid type - no operation */
+            /* Invalid type - no operation */
             break;
     }
 }

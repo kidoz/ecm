@@ -8,13 +8,6 @@
  * Uses include-based testing to access static functions without modifying source
  */
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <assert.h>
-#include <stdint.h>
-
-/* Include the shared library header */
 #include "eccedc.h"
 
 /* Rename main() and other conflicting symbols from ecm.c */
@@ -24,43 +17,8 @@
 #undef main
 #undef banner
 
-/* Test counters */
-static int tests_run = 0;
-static int tests_passed = 0;
-
-#define TEST(name)                           \
-    do {                                     \
-        tests_run++;                         \
-        printf("  Testing: %s ... ", #name); \
-        fflush(stdout);                      \
-    } while (0)
-
-#define PASS()            \
-    do {                  \
-        tests_passed++;   \
-        printf("PASS\n"); \
-    } while (0)
-
-#define FAIL(msg)                  \
-    do {                           \
-        printf("FAIL: %s\n", msg); \
-    } while (0)
-
-#define ASSERT_EQ(expected, actual)                                                \
-    do {                                                                           \
-        if ((expected) != (actual)) {                                              \
-            printf("FAIL: expected %d, got %d\n", (int)(expected), (int)(actual)); \
-            return;                                                                \
-        }                                                                          \
-    } while (0)
-
-#define ASSERT_TRUE(cond)                      \
-    do {                                       \
-        if (!(cond)) {                         \
-            printf("FAIL: condition false\n"); \
-            return;                            \
-        }                                      \
-    } while (0)
+/* Include shared test framework */
+#include "test_common.h"
 
 /*
  * Test: eccedc_init() initializes and edc_compute works correctly
@@ -105,7 +63,7 @@ void test_check_type_literal(void) {
         random_sector[i] = (uint8_t)(i * 7 + 13);
     }
 
-    int type = check_type(random_sector, 1);
+    sector_type_t type = check_type(random_sector, true);
     ASSERT_EQ(SECTOR_TYPE_LITERAL, type);
 
     PASS();
@@ -123,7 +81,7 @@ void test_check_type_invalid_sync(void) {
     uint8_t sector[SECTOR_SIZE_RAW] = {0};
     sector[0] = 0x01; /* Should be 0x00 */
 
-    int type = check_type(sector, 1);
+    sector_type_t type = check_type(sector, true);
     /* Should not be detected as Mode 1 */
     ASSERT_TRUE(type != SECTOR_TYPE_MODE1);
 
@@ -138,10 +96,10 @@ void test_write_type_count(void) {
 
     /* Create a temporary file for testing */
     FILE *f = tmpfile();
-    ASSERT_TRUE(f != NULL);
+    ASSERT_TRUE(f != nullptr);
 
     /* Write type 1, count 1 */
-    write_type_count(f, 1, 1);
+    (void)write_type_count(f, 1, 1);
 
     /* Read back and verify */
     rewind(f);
@@ -158,10 +116,10 @@ void test_write_type_count(void) {
 
     /* Test larger count */
     f = tmpfile();
-    ASSERT_TRUE(f != NULL);
+    ASSERT_TRUE(f != nullptr);
 
     /* Write type 2, count 33 (requires continuation byte) */
-    write_type_count(f, 2, 33);
+    (void)write_type_count(f, 2, 33);
 
     rewind(f);
     /* count=33, count-1=32
@@ -201,7 +159,7 @@ void test_mode1_structure(void) {
 
     /* This won't pass check_type because EDC/ECC aren't computed,
      * but it tests the sync pattern detection */
-    int type = check_type(sector, 1);
+    sector_type_t type = check_type(sector, true);
 
     /* May or may not be type 1 depending on EDC/ECC validation */
     /* The important thing is it doesn't crash */
@@ -261,7 +219,7 @@ void test_check_type_valid_mode1(void) {
     eccedc_generate(sector, SECTOR_TYPE_MODE1);
 
     /* Now check_type should detect it as Mode 1 */
-    int type = check_type(sector, 1);
+    sector_type_t type = check_type(sector, true);
     ASSERT_EQ(SECTOR_TYPE_MODE1, type);
 
     PASS();
@@ -287,7 +245,7 @@ void test_check_type_mode2_wrong_mode(void) {
     /* Wrong mode byte for Mode 2 */
     sector[OFFSET_MODE] = 0x03; /* Invalid mode */
 
-    int type = check_type(sector, 1);
+    sector_type_t type = check_type(sector, true);
     ASSERT_EQ(SECTOR_TYPE_LITERAL, type);
 
     PASS();
@@ -324,7 +282,7 @@ void test_check_type_subheader_mismatch(void) {
     sector[0x16] = 0xFF;
     sector[0x17] = 0xFF;
 
-    int type = check_type(sector, 1);
+    sector_type_t type = check_type(sector, true);
     /* With mismatched subheader, should not be detected as Mode 2 */
     ASSERT_TRUE(type == SECTOR_TYPE_LITERAL || type == SECTOR_TYPE_MODE1);
 
@@ -338,7 +296,7 @@ void test_write_type_count_large(void) {
     TEST(write_type_count_large);
 
     FILE *f = tmpfile();
-    ASSERT_TRUE(f != NULL);
+    ASSERT_TRUE(f != nullptr);
 
     /* Test with maximum useful count (close to 0xFFFFFFFF - 1) */
     /* 1000 sectors - requires multiple continuation bytes */
@@ -376,7 +334,7 @@ void test_write_type_count_returns_int(void) {
     TEST(write_type_count_returns_int);
 
     FILE *f = tmpfile();
-    ASSERT_TRUE(f != NULL);
+    ASSERT_TRUE(f != nullptr);
 
     /* Successful writes should return 0 */
     int result = write_type_count(f, SECTOR_TYPE_MODE1, 1);
@@ -419,7 +377,7 @@ void test_check_type_bad_edc(void) {
     sector[OFFSET_MODE1_EDC] ^= 0xFF;
 
     /* Should not be detected as Mode 1 */
-    int type = check_type(sector, 1);
+    sector_type_t type = check_type(sector, true);
     ASSERT_TRUE(type != SECTOR_TYPE_MODE1);
 
     PASS();
@@ -451,7 +409,7 @@ void test_check_type_bad_ecc(void) {
     sector[OFFSET_MODE1_ECC_P + 1] ^= 0xFF;
 
     /* Should not be detected as Mode 1 */
-    int type = check_type(sector, 1);
+    sector_type_t type = check_type(sector, true);
     ASSERT_TRUE(type != SECTOR_TYPE_MODE1);
 
     PASS();
@@ -464,15 +422,15 @@ int main(int argc, char **argv) {
     (void)argc;
     (void)argv;
 
-    printf("=== ECM Unit Tests ===\n\n");
+    TEST_SUITE_BEGIN("ECM Unit Tests");
 
-    printf("Constants Tests:\n");
+    TEST_CATEGORY("Constants Tests");
     test_constants();
 
-    printf("\nEDC Computation Tests:\n");
+    TEST_CATEGORY("\nEDC Computation Tests");
     test_edc_compute();
 
-    printf("\nSector Type Detection Tests:\n");
+    TEST_CATEGORY("\nSector Type Detection Tests");
     test_check_type_literal();
     test_check_type_invalid_sync();
     test_check_type_valid_mode1();
@@ -481,15 +439,13 @@ int main(int argc, char **argv) {
     test_check_type_bad_edc();
     test_check_type_bad_ecc();
 
-    printf("\nType/Count Encoding Tests:\n");
+    TEST_CATEGORY("\nType/Count Encoding Tests");
     test_write_type_count();
     test_write_type_count_large();
     test_write_type_count_returns_int();
 
-    printf("\nSector Structure Tests:\n");
+    TEST_CATEGORY("\nSector Structure Tests");
     test_mode1_structure();
 
-    printf("\n=== Results: %d/%d tests passed ===\n", tests_passed, tests_run);
-
-    return (tests_passed == tests_run) ? 0 : 1;
+    TEST_SUITE_END();
 }
