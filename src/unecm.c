@@ -40,7 +40,8 @@ static void progress_set(progress_t *p, int64_t n) {
     if ((n >> 20) != (p->current >> 20)) {
         int64_t a = (n + 64) / 128;
         int64_t d = (p->total + 64) / 128;
-        if (!d) d = 1;
+        if (!d)
+            d = 1;
         fprintf(stderr, "Decoding (%02u%%)\r", (unsigned)((100 * a) / d));
     }
     p->current = n;
@@ -86,8 +87,8 @@ static int unecmify(FILE *in, FILE *out, decode_stats_t *stats) {
         fprintf(stderr, "Error: failed to read header\n");
         goto uneof;
     }
-    if (magic[0] != ECM_MAGIC_E || magic[1] != ECM_MAGIC_C ||
-        magic[2] != ECM_MAGIC_M || magic[3] != ECM_MAGIC_NULL) {
+    if (magic[0] != ECM_MAGIC_E || magic[1] != ECM_MAGIC_C || magic[2] != ECM_MAGIC_M ||
+        magic[3] != ECM_MAGIC_NULL) {
         fprintf(stderr, "Header not found!\n");
         goto corrupt;
     }
@@ -159,11 +160,13 @@ static int unecmify(FILE *in, FILE *out, decode_stats_t *stats) {
                         }
                         sector[OFFSET_MODE] = 0x01;
                         /* Read address (3 bytes) */
-                        if (fread(sector + OFFSET_HEADER, 1, MODE1_ADDRESS_SIZE, in) != MODE1_ADDRESS_SIZE) {
+                        if (fread(sector + OFFSET_HEADER, 1, MODE1_ADDRESS_SIZE, in) !=
+                            MODE1_ADDRESS_SIZE) {
                             goto uneof;
                         }
                         /* Read user data (2048 bytes) */
-                        if (fread(sector + OFFSET_MODE1_DATA, 1, SECTOR_USER_DATA, in) != SECTOR_USER_DATA) {
+                        if (fread(sector + OFFSET_MODE1_DATA, 1, SECTOR_USER_DATA, in) !=
+                            SECTOR_USER_DATA) {
                             goto uneof;
                         }
                         /* Generate ECC/EDC */
@@ -187,7 +190,8 @@ static int unecmify(FILE *in, FILE *out, decode_stats_t *stats) {
                         }
                         sector[OFFSET_MODE] = 0x02;
                         /* Read subheader + data (4 + 2048 = 2052 bytes) */
-                        if (fread(sector + 0x014, 1, MODE2_FORM1_DATA_SIZE, in) != MODE2_FORM1_DATA_SIZE) {
+                        if (fread(sector + 0x014, 1, MODE2_FORM1_DATA_SIZE, in) !=
+                            MODE2_FORM1_DATA_SIZE) {
                             goto uneof;
                         }
                         /* Copy subheader */
@@ -197,8 +201,10 @@ static int unecmify(FILE *in, FILE *out, decode_stats_t *stats) {
                         sector[0x13] = sector[0x17];
                         /* Generate ECC/EDC */
                         eccedc_generate(sector, SECTOR_TYPE_MODE2_FORM1);
-                        checkedc = edc_compute(checkedc, sector + OFFSET_MODE2_SUBHEADER, SECTOR_SIZE_MODE2);
-                        if (fwrite(sector + OFFSET_MODE2_SUBHEADER, SECTOR_SIZE_MODE2, 1, out) != 1) {
+                        checkedc = edc_compute(checkedc, sector + OFFSET_MODE2_SUBHEADER,
+                                               SECTOR_SIZE_MODE2);
+                        if (fwrite(sector + OFFSET_MODE2_SUBHEADER, SECTOR_SIZE_MODE2, 1, out) !=
+                            1) {
                             fprintf(stderr, "Error: failed to write output\n");
                             goto writeerr;
                         }
@@ -216,7 +222,8 @@ static int unecmify(FILE *in, FILE *out, decode_stats_t *stats) {
                         }
                         sector[OFFSET_MODE] = 0x02;
                         /* Read subheader + data (4 + 2324 = 2328 bytes) */
-                        if (fread(sector + 0x014, 1, MODE2_FORM2_DATA_SIZE, in) != MODE2_FORM2_DATA_SIZE) {
+                        if (fread(sector + 0x014, 1, MODE2_FORM2_DATA_SIZE, in) !=
+                            MODE2_FORM2_DATA_SIZE) {
                             goto uneof;
                         }
                         /* Copy subheader */
@@ -226,8 +233,10 @@ static int unecmify(FILE *in, FILE *out, decode_stats_t *stats) {
                         sector[0x13] = sector[0x17];
                         /* Generate EDC (no ECC for Form 2) */
                         eccedc_generate(sector, SECTOR_TYPE_MODE2_FORM2);
-                        checkedc = edc_compute(checkedc, sector + OFFSET_MODE2_SUBHEADER, SECTOR_SIZE_MODE2);
-                        if (fwrite(sector + OFFSET_MODE2_SUBHEADER, SECTOR_SIZE_MODE2, 1, out) != 1) {
+                        checkedc = edc_compute(checkedc, sector + OFFSET_MODE2_SUBHEADER,
+                                               SECTOR_SIZE_MODE2);
+                        if (fwrite(sector + OFFSET_MODE2_SUBHEADER, SECTOR_SIZE_MODE2, 1, out) !=
+                            1) {
                             fprintf(stderr, "Error: failed to write output\n");
                             goto writeerr;
                         }
@@ -255,21 +264,13 @@ static int unecmify(FILE *in, FILE *out, decode_stats_t *stats) {
 
     off_t inpos = ftello(in);
     off_t outpos = ftello(out);
-    fprintf(stderr, "Decoded %lld bytes -> %lld bytes\n",
-        (long long)((inpos >= 0) ? inpos : 0),
-        (long long)((outpos >= 0) ? outpos : 0));
+    fprintf(stderr, "Decoded %lld bytes -> %lld bytes\n", (long long)((inpos >= 0) ? inpos : 0),
+            (long long)((outpos >= 0) ? outpos : 0));
 
-    if (sector[0] != ((checkedc >> 0) & 0xFF) ||
-        sector[1] != ((checkedc >> 8) & 0xFF) ||
-        sector[2] != ((checkedc >> 16) & 0xFF) ||
-        sector[3] != ((checkedc >> 24) & 0xFF)) {
-        fprintf(stderr, "EDC error (%08X, should be %02X%02X%02X%02X)\n",
-            checkedc,
-            sector[3],
-            sector[2],
-            sector[1],
-            sector[0]
-        );
+    if (sector[0] != ((checkedc >> 0) & 0xFF) || sector[1] != ((checkedc >> 8) & 0xFF) ||
+        sector[2] != ((checkedc >> 16) & 0xFF) || sector[3] != ((checkedc >> 24) & 0xFF)) {
+        fprintf(stderr, "EDC error (%08X, should be %02X%02X%02X%02X)\n", checkedc, sector[3],
+                sector[2], sector[1], sector[0]);
         goto corrupt;
     }
 

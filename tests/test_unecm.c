@@ -18,7 +18,7 @@
 #include "eccedc.h"
 
 /* Rename main() and other conflicting symbols from unecm.c */
-#define main unecm_main
+#define main   unecm_main
 #define banner unecm_banner
 #include "../src/unecm.c"
 #undef main
@@ -28,47 +28,47 @@
 static int tests_run = 0;
 static int tests_passed = 0;
 
-#define TEST(name) \
-    do { \
-        tests_run++; \
+#define TEST(name)                           \
+    do {                                     \
+        tests_run++;                         \
         printf("  Testing: %s ... ", #name); \
-        fflush(stdout); \
-    } while(0)
+        fflush(stdout);                      \
+    } while (0)
 
-#define PASS() \
-    do { \
-        tests_passed++; \
+#define PASS()            \
+    do {                  \
+        tests_passed++;   \
         printf("PASS\n"); \
-    } while(0)
+    } while (0)
 
-#define FAIL(msg) \
-    do { \
+#define FAIL(msg)                  \
+    do {                           \
         printf("FAIL: %s\n", msg); \
-    } while(0)
+    } while (0)
 
-#define ASSERT_EQ(expected, actual) \
-    do { \
-        if ((expected) != (actual)) { \
+#define ASSERT_EQ(expected, actual)                                                              \
+    do {                                                                                         \
+        if ((expected) != (actual)) {                                                            \
             printf("FAIL: expected 0x%X, got 0x%X\n", (unsigned)(expected), (unsigned)(actual)); \
-            return; \
-        } \
-    } while(0)
+            return;                                                                              \
+        }                                                                                        \
+    } while (0)
 
-#define ASSERT_TRUE(cond) \
-    do { \
-        if (!(cond)) { \
+#define ASSERT_TRUE(cond)                      \
+    do {                                       \
+        if (!(cond)) {                         \
             printf("FAIL: condition false\n"); \
-            return; \
-        } \
-    } while(0)
+            return;                            \
+        }                                      \
+    } while (0)
 
-#define ASSERT_MEM_EQ(expected, actual, size) \
-    do { \
+#define ASSERT_MEM_EQ(expected, actual, size)            \
+    do {                                                 \
         if (memcmp((expected), (actual), (size)) != 0) { \
-            printf("FAIL: memory mismatch\n"); \
-            return; \
-        } \
-    } while(0)
+            printf("FAIL: memory mismatch\n");           \
+            return;                                      \
+        }                                                \
+    } while (0)
 
 /*
  * Test: edc_compute() computes EDC correctly
@@ -130,13 +130,14 @@ void test_eccedc_generate_mode1(void) {
 
     /* Sync pattern */
     sector[0x00] = SYNC_BYTE_START;
-    for (int i = 1; i <= 10; i++) sector[i] = SYNC_BYTE_MIDDLE;
+    for (int i = 1; i <= 10; i++)
+        sector[i] = SYNC_BYTE_MIDDLE;
     sector[0x0B] = SYNC_BYTE_END;
 
     /* Address (MSF) */
-    sector[OFFSET_HEADER + 0] = 0x00;  /* Minutes */
-    sector[OFFSET_HEADER + 1] = 0x02;  /* Seconds */
-    sector[OFFSET_HEADER + 2] = 0x00;  /* Frames */
+    sector[OFFSET_HEADER + 0] = 0x00; /* Minutes */
+    sector[OFFSET_HEADER + 1] = 0x02; /* Seconds */
+    sector[OFFSET_HEADER + 2] = 0x00; /* Frames */
 
     /* Mode */
     sector[OFFSET_MODE] = 0x01;
@@ -166,7 +167,8 @@ void test_eccedc_generate_mode1(void) {
     /* Just verify they're non-zero (proper ECC generation) */
     int ecc_nonzero = 0;
     for (int i = OFFSET_MODE1_ECC_P; i < SECTOR_SIZE_RAW; i++) {
-        if (sector[i] != 0) ecc_nonzero = 1;
+        if (sector[i] != 0)
+            ecc_nonzero = 1;
     }
     ASSERT_TRUE(ecc_nonzero);
 
@@ -187,7 +189,8 @@ void test_eccedc_generate_mode2_form1(void) {
 
     /* Sync pattern */
     sector[0x00] = SYNC_BYTE_START;
-    for (int i = 1; i <= 10; i++) sector[i] = SYNC_BYTE_MIDDLE;
+    for (int i = 1; i <= 10; i++)
+        sector[i] = SYNC_BYTE_MIDDLE;
     sector[0x0B] = SYNC_BYTE_END;
 
     /* Address */
@@ -199,10 +202,10 @@ void test_eccedc_generate_mode2_form1(void) {
     sector[OFFSET_MODE] = 0x02;
 
     /* Subheader (8 bytes: 4 bytes + 4 bytes copy) */
-    sector[0x10] = 0x00;  /* File number */
-    sector[0x11] = 0x00;  /* Channel */
-    sector[0x12] = 0x08;  /* Submode (Form 1) */
-    sector[0x13] = 0x00;  /* Coding info */
+    sector[0x10] = 0x00; /* File number */
+    sector[0x11] = 0x00; /* Channel */
+    sector[0x12] = 0x08; /* Submode (Form 1) */
+    sector[0x13] = 0x00; /* Coding info */
     /* Copy of subheader */
     sector[0x14] = sector[0x10];
     sector[0x15] = sector[0x11];
@@ -242,7 +245,8 @@ void test_eccedc_generate_mode2_form2(void) {
 
     /* Sync pattern */
     sector[0x00] = SYNC_BYTE_START;
-    for (int i = 1; i <= 10; i++) sector[i] = SYNC_BYTE_MIDDLE;
+    for (int i = 1; i <= 10; i++)
+        sector[i] = SYNC_BYTE_MIDDLE;
     sector[0x0B] = SYNC_BYTE_END;
 
     /* Mode 2 */
@@ -251,7 +255,7 @@ void test_eccedc_generate_mode2_form2(void) {
     /* Subheader for Form 2 */
     sector[0x10] = 0x00;
     sector[0x11] = 0x00;
-    sector[0x12] = 0x20;  /* Form 2 submode */
+    sector[0x12] = 0x20; /* Form 2 submode */
     sector[0x13] = 0x00;
     sector[0x14] = sector[0x10];
     sector[0x15] = sector[0x11];
@@ -542,11 +546,11 @@ void test_unecmify_empty_data(void) {
 
     /* Write end-of-records marker (special encoding for count=0) */
     /* write_type_count(out, 0, 0): count-- wraps to 0xFFFFFFFF */
-    fputc(0xFC, fin);  /* type=0, first 5 bits of count-1, continuation */
+    fputc(0xFC, fin); /* type=0, first 5 bits of count-1, continuation */
     fputc(0xFF, fin);
     fputc(0xFF, fin);
     fputc(0xFF, fin);
-    fputc(0x7F, fin);  /* final byte, no continuation */
+    fputc(0x7F, fin); /* final byte, no continuation */
 
     /* Write correct EDC for empty data (0) */
     fputc(0x00, fin);
@@ -589,7 +593,7 @@ void test_unecmify_truncated_type_count(void) {
     fputc(ECM_MAGIC_NULL, fin);
 
     /* Write type/count that requires continuation but EOF before it */
-    fputc(0x80, fin);  /* Continuation bit set, needs more bytes */
+    fputc(0x80, fin); /* Continuation bit set, needs more bytes */
     /* EOF - no more bytes */
 
     rewind(fin);

@@ -48,23 +48,17 @@ void edc_compute_block(const uint8_t *src, size_t size, uint8_t *dest) {
         return;
     }
     uint32_t edc = edc_compute(0, src, size);
-    dest[0] = (uint8_t)((edc >> 0) & 0xFF);
-    dest[1] = (uint8_t)((edc >> 8) & 0xFF);
-    dest[2] = (uint8_t)((edc >> 16) & 0xFF);
-    dest[3] = (uint8_t)((edc >> 24) & 0xFF);
+    dest[0] = edc & 0xFF;
+    dest[1] = (edc >> 8) & 0xFF;
+    dest[2] = (edc >> 16) & 0xFF;
+    dest[3] = (edc >> 24) & 0xFF;
 }
 
 /*
  * Internal: Compute ECC for a block (can do either P or Q)
  */
-static void ecc_compute_block(
-    uint8_t *src,
-    uint32_t major_count,
-    uint32_t minor_count,
-    uint32_t major_mult,
-    uint32_t minor_inc,
-    uint8_t *dest
-) {
+static void ecc_compute_block(uint8_t *src, uint32_t major_count, uint32_t minor_count,
+                              uint32_t major_mult, uint32_t minor_inc, uint8_t *dest) {
     uint32_t size = major_count * minor_count;
 
     for (uint32_t major = 0; major < major_count; major++) {
@@ -93,14 +87,8 @@ static void ecc_compute_block(
  * Internal: Verify ECC for a block (can do either P or Q)
  * Returns 1 if ECC matches, 0 otherwise
  */
-static int ecc_verify_block(
-    uint8_t *src,
-    uint32_t major_count,
-    uint32_t minor_count,
-    uint32_t major_mult,
-    uint32_t minor_inc,
-    uint8_t *dest
-) {
+static int ecc_verify_block(uint8_t *src, uint32_t major_count, uint32_t minor_count,
+                            uint32_t major_mult, uint32_t minor_inc, uint8_t *dest) {
     uint32_t size = major_count * minor_count;
 
     for (uint32_t major = 0; major < major_count; major++) {
@@ -147,24 +135,20 @@ void ecc_generate(uint8_t *sector, int zeroaddress) {
     }
 
     /* Compute ECC P code */
-    ecc_compute_block(
-        sector + 0xC,   /* src */
-        86,             /* major_count */
-        24,             /* minor_count */
-        2,              /* major_mult */
-        86,             /* minor_inc */
-        sector + OFFSET_MODE1_ECC_P
-    );
+    ecc_compute_block(sector + 0xC, /* src */
+                      86,           /* major_count */
+                      24,           /* minor_count */
+                      2,            /* major_mult */
+                      86,           /* minor_inc */
+                      sector + OFFSET_MODE1_ECC_P);
 
     /* Compute ECC Q code */
-    ecc_compute_block(
-        sector + 0xC,   /* src */
-        52,             /* major_count */
-        43,             /* minor_count */
-        86,             /* major_mult */
-        88,             /* minor_inc */
-        sector + OFFSET_MODE1_ECC_Q
-    );
+    ecc_compute_block(sector + 0xC, /* src */
+                      52,           /* major_count */
+                      43,           /* minor_count */
+                      86,           /* major_mult */
+                      88,           /* minor_inc */
+                      sector + OFFSET_MODE1_ECC_Q);
 
     /* Restore the address */
     if (zeroaddress) {
@@ -192,11 +176,8 @@ int ecc_verify(uint8_t *sector, int zeroaddress, uint8_t *dest) {
     }
 
     /* Verify ECC P code */
-    if (!ecc_verify_block(
-        sector + 0xC,
-        86, 24, 2, 86,
-        dest + (OFFSET_MODE1_ECC_P - OFFSET_MODE1_ECC_P)
-    )) {
+    if (!ecc_verify_block(sector + 0xC, 86, 24, 2, 86,
+                          dest + (OFFSET_MODE1_ECC_P - OFFSET_MODE1_ECC_P))) {
         if (zeroaddress) {
             for (int i = 0; i < 4; i++) {
                 sector[12 + i] = address[i];
@@ -206,11 +187,8 @@ int ecc_verify(uint8_t *sector, int zeroaddress, uint8_t *dest) {
     }
 
     /* Verify ECC Q code */
-    result = ecc_verify_block(
-        sector + 0xC,
-        52, 43, 86, 88,
-        dest + (OFFSET_MODE1_ECC_Q - OFFSET_MODE1_ECC_P)
-    );
+    result = ecc_verify_block(sector + 0xC, 52, 43, 86, 88,
+                              dest + (OFFSET_MODE1_ECC_Q - OFFSET_MODE1_ECC_P));
 
     /* Restore the address */
     if (zeroaddress) {

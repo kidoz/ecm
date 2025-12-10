@@ -41,20 +41,13 @@ static int check_type(uint8_t *sector, int canbetype1) {
 
     /* Check for Mode 1 sync pattern and structure */
     if (canbetype1) {
-        if (sector[0x00] != SYNC_BYTE_START ||
-            sector[0x01] != SYNC_BYTE_MIDDLE ||
-            sector[0x02] != SYNC_BYTE_MIDDLE ||
-            sector[0x03] != SYNC_BYTE_MIDDLE ||
-            sector[0x04] != SYNC_BYTE_MIDDLE ||
-            sector[0x05] != SYNC_BYTE_MIDDLE ||
-            sector[0x06] != SYNC_BYTE_MIDDLE ||
-            sector[0x07] != SYNC_BYTE_MIDDLE ||
-            sector[0x08] != SYNC_BYTE_MIDDLE ||
-            sector[0x09] != SYNC_BYTE_MIDDLE ||
-            sector[0x0A] != SYNC_BYTE_MIDDLE ||
-            sector[0x0B] != SYNC_BYTE_END ||
-            sector[OFFSET_MODE] != 0x01 ||
-            sector[OFFSET_MODE1_RESERVED + 0] != 0x00 ||
+        if (sector[0x00] != SYNC_BYTE_START || sector[0x01] != SYNC_BYTE_MIDDLE ||
+            sector[0x02] != SYNC_BYTE_MIDDLE || sector[0x03] != SYNC_BYTE_MIDDLE ||
+            sector[0x04] != SYNC_BYTE_MIDDLE || sector[0x05] != SYNC_BYTE_MIDDLE ||
+            sector[0x06] != SYNC_BYTE_MIDDLE || sector[0x07] != SYNC_BYTE_MIDDLE ||
+            sector[0x08] != SYNC_BYTE_MIDDLE || sector[0x09] != SYNC_BYTE_MIDDLE ||
+            sector[0x0A] != SYNC_BYTE_MIDDLE || sector[0x0B] != SYNC_BYTE_END ||
+            sector[OFFSET_MODE] != 0x01 || sector[OFFSET_MODE1_RESERVED + 0] != 0x00 ||
             sector[OFFSET_MODE1_RESERVED + 1] != 0x00 ||
             sector[OFFSET_MODE1_RESERVED + 2] != 0x00 ||
             sector[OFFSET_MODE1_RESERVED + 3] != 0x00 ||
@@ -67,9 +60,7 @@ static int check_type(uint8_t *sector, int canbetype1) {
     }
 
     /* Check for Mode 2 subheader duplication */
-    if (sector[0x0] != sector[0x4] ||
-        sector[0x1] != sector[0x5] ||
-        sector[0x2] != sector[0x6] ||
+    if (sector[0x0] != sector[0x4] || sector[0x1] != sector[0x5] || sector[0x2] != sector[0x6] ||
         sector[0x3] != sector[0x7]) {
         canbetype2 = 0;
         canbetype3 = 0;
@@ -81,10 +72,8 @@ static int check_type(uint8_t *sector, int canbetype1) {
     /* Check EDC for Mode 2 Form 1 */
     myedc = edc_compute(0, sector, 0x808);
     if (canbetype2) {
-        if (sector[0x808] != ((myedc >> 0) & 0xFF) ||
-            sector[0x809] != ((myedc >> 8) & 0xFF) ||
-            sector[0x80A] != ((myedc >> 16) & 0xFF) ||
-            sector[0x80B] != ((myedc >> 24) & 0xFF)) {
+        if (sector[0x808] != ((myedc >> 0) & 0xFF) || sector[0x809] != ((myedc >> 8) & 0xFF) ||
+            sector[0x80A] != ((myedc >> 16) & 0xFF) || sector[0x80B] != ((myedc >> 24) & 0xFF)) {
             canbetype2 = 0;
         }
     }
@@ -103,10 +92,8 @@ static int check_type(uint8_t *sector, int canbetype1) {
     /* Check EDC for Mode 2 Form 2 */
     myedc = edc_compute(myedc, sector + OFFSET_MODE1_EDC, 0x10C);
     if (canbetype3) {
-        if (sector[0x91C] != ((myedc >> 0) & 0xFF) ||
-            sector[0x91D] != ((myedc >> 8) & 0xFF) ||
-            sector[0x91E] != ((myedc >> 16) & 0xFF) ||
-            sector[0x91F] != ((myedc >> 24) & 0xFF)) {
+        if (sector[0x91C] != ((myedc >> 0) & 0xFF) || sector[0x91D] != ((myedc >> 8) & 0xFF) ||
+            sector[0x91E] != ((myedc >> 16) & 0xFF) || sector[0x91F] != ((myedc >> 24) & 0xFF)) {
             canbetype3 = 0;
         }
     }
@@ -123,9 +110,12 @@ static int check_type(uint8_t *sector, int canbetype1) {
         }
     }
 
-    if (canbetype1) return SECTOR_TYPE_MODE1;
-    if (canbetype2) return SECTOR_TYPE_MODE2_FORM1;
-    if (canbetype3) return SECTOR_TYPE_MODE2_FORM2;
+    if (canbetype1)
+        return SECTOR_TYPE_MODE1;
+    if (canbetype2)
+        return SECTOR_TYPE_MODE2_FORM1;
+    if (canbetype3)
+        return SECTOR_TYPE_MODE2_FORM2;
     return SECTOR_TYPE_LITERAL;
 }
 
@@ -168,9 +158,10 @@ static void progress_set_analyze(progress_t *p, int64_t n) {
         int64_t a = (n + 64) / 128;
         int64_t e = (p->encode + 64) / 128;
         int64_t d = (p->total + 64) / 128;
-        if (!d) d = 1;
-        fprintf(stderr, "Analyzing (%02u%%) Encoding (%02u%%)\r",
-            (unsigned)((100 * a) / d), (unsigned)((100 * e) / d));
+        if (!d)
+            d = 1;
+        fprintf(stderr, "Analyzing (%02u%%) Encoding (%02u%%)\r", (unsigned)((100 * a) / d),
+                (unsigned)((100 * e) / d));
     }
     p->analyze = n;
 }
@@ -180,9 +171,10 @@ static void progress_set_encode(progress_t *p, int64_t n) {
         int64_t a = (p->analyze + 64) / 128;
         int64_t e = (n + 64) / 128;
         int64_t d = (p->total + 64) / 128;
-        if (!d) d = 1;
-        fprintf(stderr, "Analyzing (%02u%%) Encoding (%02u%%)\r",
-            (unsigned)((100 * a) / d), (unsigned)((100 * e) / d));
+        if (!d)
+            d = 1;
+        fprintf(stderr, "Analyzing (%02u%%) Encoding (%02u%%)\r", (unsigned)((100 * a) / d),
+                (unsigned)((100 * e) / d));
     }
     p->encode = n;
 }
@@ -191,14 +183,8 @@ static void progress_set_encode(progress_t *p, int64_t n) {
  * Encode a run of sectors/literals of the same type
  * Returns 0 on success, -1 on error. Updates *edc with running checksum.
  */
-static int flush_sector_run(
-    uint32_t *edc,
-    unsigned type,
-    unsigned count,
-    FILE *in,
-    FILE *out,
-    progress_t *progress
-) {
+static int flush_sector_run(uint32_t *edc, unsigned type, unsigned count, FILE *in, FILE *out,
+                            progress_t *progress) {
     uint8_t buf[SECTOR_SIZE_RAW];
     size_t bytes_read;
 
@@ -261,7 +247,8 @@ static int flush_sector_run(
                 }
                 *edc = edc_compute(*edc, buf, SECTOR_SIZE_MODE2);
                 /* Write subheader (4 bytes) and user data (2048 bytes) */
-                if (fwrite(buf + MODE2_SUBHEADER_SIZE, 1, MODE2_FORM1_DATA_SIZE, out) != MODE2_FORM1_DATA_SIZE) {
+                if (fwrite(buf + MODE2_SUBHEADER_SIZE, 1, MODE2_FORM1_DATA_SIZE, out) !=
+                    MODE2_FORM1_DATA_SIZE) {
                     fprintf(stderr, "Error: failed to write output\n");
                     return -1;
                 }
@@ -281,7 +268,8 @@ static int flush_sector_run(
                 }
                 *edc = edc_compute(*edc, buf, SECTOR_SIZE_MODE2);
                 /* Write subheader and data (2328 bytes total) */
-                if (fwrite(buf + MODE2_SUBHEADER_SIZE, 1, MODE2_FORM2_DATA_SIZE, out) != MODE2_FORM2_DATA_SIZE) {
+                if (fwrite(buf + MODE2_SUBHEADER_SIZE, 1, MODE2_FORM2_DATA_SIZE, out) !=
+                    MODE2_FORM2_DATA_SIZE) {
                     fprintf(stderr, "Error: failed to write output\n");
                     return -1;
                 }
@@ -343,10 +331,8 @@ static int ecmify(FILE *in, FILE *out) {
     progress_reset(&progress, intotallength);
 
     /* [TS 17961 5.19 liberr] Write magic header with error checking */
-    if (fputc(ECM_MAGIC_E, out) == EOF ||
-        fputc(ECM_MAGIC_C, out) == EOF ||
-        fputc(ECM_MAGIC_M, out) == EOF ||
-        fputc(ECM_MAGIC_NULL, out) == EOF) {
+    if (fputc(ECM_MAGIC_E, out) == EOF || fputc(ECM_MAGIC_C, out) == EOF ||
+        fputc(ECM_MAGIC_M, out) == EOF || fputc(ECM_MAGIC_NULL, out) == EOF) {
         fprintf(stderr, "Error: failed to write magic header\n");
         free(inputqueue);
         return 1;
@@ -398,7 +384,8 @@ static int ecmify(FILE *in, FILE *out) {
                     goto cleanup;
                 }
                 typetally[curtype] += (unsigned)curtypecount;
-                if (flush_sector_run(&inedc, (unsigned)curtype, (unsigned)curtypecount, in, out, &progress) < 0) {
+                if (flush_sector_run(&inedc, (unsigned)curtype, (unsigned)curtypecount, in, out,
+                                     &progress) < 0) {
                     result = 1;
                     goto cleanup;
                 }
@@ -440,7 +427,8 @@ static int ecmify(FILE *in, FILE *out) {
             goto cleanup;
         }
         typetally[curtype] += (unsigned)curtypecount;
-        if (flush_sector_run(&inedc, (unsigned)curtype, (unsigned)curtypecount, in, out, &progress) < 0) {
+        if (flush_sector_run(&inedc, (unsigned)curtype, (unsigned)curtypecount, in, out,
+                             &progress) < 0) {
             result = 1;
             goto cleanup;
         }
@@ -454,10 +442,8 @@ static int ecmify(FILE *in, FILE *out) {
     }
 
     /* Input file EDC (integrity check) */
-    if (fputc((inedc >> 0) & 0xFF, out) == EOF ||
-        fputc((inedc >> 8) & 0xFF, out) == EOF ||
-        fputc((inedc >> 16) & 0xFF, out) == EOF ||
-        fputc((inedc >> 24) & 0xFF, out) == EOF) {
+    if (fputc((inedc >> 0) & 0xFF, out) == EOF || fputc((inedc >> 8) & 0xFF, out) == EOF ||
+        fputc((inedc >> 16) & 0xFF, out) == EOF || fputc((inedc >> 24) & 0xFF, out) == EOF) {
         fprintf(stderr, "Error: failed to write EDC checksum\n");
         result = 1;
         goto cleanup;
@@ -469,9 +455,8 @@ static int ecmify(FILE *in, FILE *out) {
     fprintf(stderr, "Mode 2 form 1 sectors... %10u\n", typetally[SECTOR_TYPE_MODE2_FORM1]);
     fprintf(stderr, "Mode 2 form 2 sectors... %10u\n", typetally[SECTOR_TYPE_MODE2_FORM2]);
     off_t outpos = ftello(out);
-    fprintf(stderr, "Encoded %lld bytes -> %lld bytes\n",
-        (long long)intotallength,
-        (long long)((outpos >= 0) ? outpos : 0));
+    fprintf(stderr, "Encoded %lld bytes -> %lld bytes\n", (long long)intotallength,
+            (long long)((outpos >= 0) ? outpos : 0));
     fprintf(stderr, "Done.\n");
 
 cleanup:

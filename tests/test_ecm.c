@@ -18,7 +18,7 @@
 #include "eccedc.h"
 
 /* Rename main() and other conflicting symbols from ecm.c */
-#define main ecm_main
+#define main   ecm_main
 #define banner ecm_banner
 #include "../src/ecm.c"
 #undef main
@@ -28,39 +28,39 @@
 static int tests_run = 0;
 static int tests_passed = 0;
 
-#define TEST(name) \
-    do { \
-        tests_run++; \
+#define TEST(name)                           \
+    do {                                     \
+        tests_run++;                         \
         printf("  Testing: %s ... ", #name); \
-        fflush(stdout); \
-    } while(0)
+        fflush(stdout);                      \
+    } while (0)
 
-#define PASS() \
-    do { \
-        tests_passed++; \
+#define PASS()            \
+    do {                  \
+        tests_passed++;   \
         printf("PASS\n"); \
-    } while(0)
+    } while (0)
 
-#define FAIL(msg) \
-    do { \
+#define FAIL(msg)                  \
+    do {                           \
         printf("FAIL: %s\n", msg); \
-    } while(0)
+    } while (0)
 
-#define ASSERT_EQ(expected, actual) \
-    do { \
-        if ((expected) != (actual)) { \
+#define ASSERT_EQ(expected, actual)                                                \
+    do {                                                                           \
+        if ((expected) != (actual)) {                                              \
             printf("FAIL: expected %d, got %d\n", (int)(expected), (int)(actual)); \
-            return; \
-        } \
-    } while(0)
+            return;                                                                \
+        }                                                                          \
+    } while (0)
 
-#define ASSERT_TRUE(cond) \
-    do { \
-        if (!(cond)) { \
+#define ASSERT_TRUE(cond)                      \
+    do {                                       \
+        if (!(cond)) {                         \
             printf("FAIL: condition false\n"); \
-            return; \
-        } \
-    } while(0)
+            return;                            \
+        }                                      \
+    } while (0)
 
 /*
  * Test: eccedc_init() initializes and edc_compute works correctly
@@ -121,7 +121,7 @@ void test_check_type_invalid_sync(void) {
 
     /* Create sector with wrong sync pattern */
     uint8_t sector[SECTOR_SIZE_RAW] = {0};
-    sector[0] = 0x01;  /* Should be 0x00 */
+    sector[0] = 0x01; /* Should be 0x00 */
 
     int type = check_type(sector, 1);
     /* Should not be detected as Mode 1 */
@@ -190,7 +190,8 @@ void test_mode1_structure(void) {
 
     /* Sync pattern: 00 FF FF FF FF FF FF FF FF FF FF 00 */
     sector[0x00] = SYNC_BYTE_START;
-    for (int i = 1; i <= 10; i++) sector[i] = SYNC_BYTE_MIDDLE;
+    for (int i = 1; i <= 10; i++)
+        sector[i] = SYNC_BYTE_MIDDLE;
     sector[0x0B] = SYNC_BYTE_END;
 
     /* Mode byte */
@@ -239,7 +240,8 @@ void test_check_type_valid_mode1(void) {
 
     /* Sync pattern */
     sector[0x00] = SYNC_BYTE_START;
-    for (int i = 1; i <= 10; i++) sector[i] = SYNC_BYTE_MIDDLE;
+    for (int i = 1; i <= 10; i++)
+        sector[i] = SYNC_BYTE_MIDDLE;
     sector[0x0B] = SYNC_BYTE_END;
 
     /* Address (MSF) */
@@ -278,11 +280,12 @@ void test_check_type_mode2_wrong_mode(void) {
 
     /* Valid sync pattern */
     sector[0x00] = SYNC_BYTE_START;
-    for (int i = 1; i <= 10; i++) sector[i] = SYNC_BYTE_MIDDLE;
+    for (int i = 1; i <= 10; i++)
+        sector[i] = SYNC_BYTE_MIDDLE;
     sector[0x0B] = SYNC_BYTE_END;
 
     /* Wrong mode byte for Mode 2 */
-    sector[OFFSET_MODE] = 0x03;  /* Invalid mode */
+    sector[OFFSET_MODE] = 0x03; /* Invalid mode */
 
     int type = check_type(sector, 1);
     ASSERT_EQ(SECTOR_TYPE_LITERAL, type);
@@ -303,7 +306,8 @@ void test_check_type_subheader_mismatch(void) {
 
     /* Valid sync */
     sector[0x00] = SYNC_BYTE_START;
-    for (int i = 1; i <= 10; i++) sector[i] = SYNC_BYTE_MIDDLE;
+    for (int i = 1; i <= 10; i++)
+        sector[i] = SYNC_BYTE_MIDDLE;
     sector[0x0B] = SYNC_BYTE_END;
 
     /* Mode 2 */
@@ -356,7 +360,7 @@ void test_write_type_count_large(void) {
         num |= ((unsigned)(c & 0x7F)) << bits;
         bits += 7;
     }
-    num++;  /* Decode adds 1 */
+    num++; /* Decode adds 1 */
 
     ASSERT_EQ(SECTOR_TYPE_MODE1, type);
     ASSERT_EQ(1000, num);
@@ -401,7 +405,8 @@ void test_check_type_bad_edc(void) {
 
     /* Valid sync pattern */
     sector[0x00] = SYNC_BYTE_START;
-    for (int i = 1; i <= 10; i++) sector[i] = SYNC_BYTE_MIDDLE;
+    for (int i = 1; i <= 10; i++)
+        sector[i] = SYNC_BYTE_MIDDLE;
     sector[0x0B] = SYNC_BYTE_END;
 
     /* Mode 1 */
@@ -433,7 +438,8 @@ void test_check_type_bad_ecc(void) {
 
     /* Valid sync and mode */
     sector[0x00] = SYNC_BYTE_START;
-    for (int i = 1; i <= 10; i++) sector[i] = SYNC_BYTE_MIDDLE;
+    for (int i = 1; i <= 10; i++)
+        sector[i] = SYNC_BYTE_MIDDLE;
     sector[0x0B] = SYNC_BYTE_END;
     sector[OFFSET_MODE] = 0x01;
 
