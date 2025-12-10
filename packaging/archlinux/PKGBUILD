@@ -1,0 +1,28 @@
+# Maintainer: Your Name <your.email@example.com>
+pkgname=ecm
+pkgver=1.0.0
+pkgrel=1
+pkgdesc="Error Code Modeler - encoder/decoder for CD image ECC/EDC data"
+arch=('x86_64')
+url="https://github.com/kidoz/ecm"
+license=('GPL-2.0-or-later')
+depends=('glibc')
+makedepends=('meson' 'ninja')
+source=("${pkgname}-${pkgver}.tar.gz::${url}/archive/v${pkgver}.tar.gz")
+sha256sums=('SKIP')
+
+build() {
+    cd "${pkgname}-${pkgver}"
+    meson setup build --prefix=/usr --buildtype=release
+    meson compile -C build
+}
+
+check() {
+    cd "${pkgname}-${pkgver}"
+    meson test -C build
+}
+
+package() {
+    cd "${pkgname}-${pkgver}"
+    meson install -C build --destdir="${pkgdir}"
+}
