@@ -60,8 +60,8 @@ ecm <cdimagefile> [ecmfile]
 
 | Argument | Description |
 |----------|-------------|
-| `cdimagefile` | Input CD image file (BIN, CDI, NRG, CCD, etc.) |
-| `ecmfile` | Output ECM file (optional, defaults to `<input>.ecm`) |
+| `cdimagefile` | Input CD image file (BIN, CDI, NRG, CCD, etc.), or `-` for stdin |
+| `ecmfile` | Output ECM file (optional, defaults to `<input>.ecm`), or `-` for stdout |
 
 **Example:**
 
@@ -79,8 +79,8 @@ unecm [--cue] <ecmfile> [outputfile]
 | Argument | Description |
 |----------|-------------|
 | `--cue` | Generate a CUE sheet file |
-| `ecmfile` | Input ECM file (must end in `.ecm`) |
-| `outputfile` | Output file (optional, defaults to input without `.ecm`) |
+| `ecmfile` | Input ECM file (must end in `.ecm`), or `-` for stdin |
+| `outputfile` | Output file (optional, defaults to input without `.ecm`), or `-` for stdout |
 
 **Example:**
 
