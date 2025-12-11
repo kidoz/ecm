@@ -171,6 +171,45 @@ mode bytes are NOT included.
 
 The redundant flags and EDC bytes are reconstructed upon decoding.
 
+## Limitations and Notes
+
+### Implementation Note: Output Sector Size
+
+This implementation outputs **2352 bytes** (full raw sectors) for all sector types:
+
+| Sector Type | Original ECM Spec | This Implementation |
+|-------------|-------------------|---------------------|
+| Mode 1 | 2352 bytes | 2352 bytes |
+| Mode 2 Form 1 | 2336 bytes | **2352 bytes** |
+| Mode 2 Form 2 | 2336 bytes | **2352 bytes** |
+
+The original ECM format specification describes Mode 2 sectors expanding to 2336 bytes
+(without sync/address/mode). This implementation instead reconstructs full 2352-byte
+raw sectors for all types, enabling:
+
+- **Round-trip consistency**: encode(decode(file)) == file
+- **Uniform sector size**: All output sectors are 2352 bytes
+- **Raw image compatibility**: Works directly with tools expecting 2352-byte sectors
+
+**Compatibility note**: ECM files created by this tool are compatible with the original
+format. However, decoded output will differ from the original ECM tools for Mode 2 sectors
+(2352 bytes vs 2336 bytes).
+
+### MSF Address Handling
+
+| Sector Type | MSF (Address) Behavior |
+|-------------|------------------------|
+| Mode 1 | **Preserved** - Original MSF stored in ECM, restored on decode |
+| Mode 2 Form 1/2 | **Generated** - Sequential MSF addresses generated starting from 00:02:00 |
+
+For Mode 2 sectors, the decoder generates sequential BCD-encoded MSF addresses.
+The original MSF is not preserved because it is not stored in the ECM format.
+
+**Implication:** For multi-track discs or images with non-sequential sector addresses,
+Mode 2 sectors will have regenerated sequential MSF values. This is acceptable for most
+single-track data discs (e.g., PlayStation games) but may affect specialized use cases
+requiring exact sector addressing.
+
 ## Contact
 
 - **Email:** corlett@lfx.org

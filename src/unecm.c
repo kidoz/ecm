@@ -54,6 +54,40 @@ typedef struct {
 } decode_stats_t;
 
 /*
+ * Output position tracker for MSF address computation.
+ * Tracks bytes written explicitly to support non-seekable outputs (stdout/pipes).
+ * Literal bytes also contribute to the sector position.
+ */
+typedef struct {
+    int64_t bytes_written;
+} output_tracker_t;
+
+/* Convert binary value to packed BCD (00-99) */
+static uint8_t to_bcd(uint8_t value) {
+    return (uint8_t)(((value / 10) << 4) | (value % 10));
+}
+
+/*
+ * Convert sector number to MSF (Minutes:Seconds:Frames) address.
+ * CD standard: 75 frames/second, 60 seconds/minute.
+ * First data sector is at MSF 00:02:00 (150 frames offset).
+ */
+static void sector_to_msf(uint32_t sector, uint8_t *msf) {
+    uint32_t frame = sector + 150; /* 2-second pregap offset */
+    msf[2] = to_bcd((uint8_t)(frame % 75));
+    frame /= 75;
+    msf[1] = to_bcd((uint8_t)(frame % 60));
+    msf[0] = to_bcd((uint8_t)(frame / 60));
+}
+
+/*
+ * Get current sector number from tracked output position.
+ */
+static uint32_t get_current_sector(const output_tracker_t *tracker) {
+    return (uint32_t)(tracker->bytes_written / SECTOR_SIZE_RAW);
+}
+
+/*
  * Read and verify magic header
  */
 static bool read_magic_header(FILE *in) {
@@ -128,9 +162,17 @@ static int decode_mode1_sector(FILE *in, FILE *out, uint8_t *sector, uint32_t *c
 /*
  * Decode a Mode 2 Form 1 sector
  */
-static int decode_mode2_form1_sector(FILE *in, FILE *out, uint8_t *sector, uint32_t *checkedc) {
+static int decode_mode2_form1_sector(FILE *in, FILE *out, uint8_t *sector, uint32_t *checkedc,
+                                     output_tracker_t *tracker) {
+    /* Get current sector number from output position BEFORE writing */
+    uint32_t sector_num = get_current_sector(tracker);
+
     memset(sector, 0, SECTOR_SIZE_RAW);
+    /* Sync pattern: 00 FF FF FF FF FF FF FF FF FF FF 00 */
     memset(sector + 1, SYNC_BYTE_MIDDLE, 10);
+    /* MSF address computed from output position */
+    sector_to_msf(sector_num, sector + OFFSET_HEADER);
+    /* Mode byte */
     sector[OFFSET_MODE] = 0x02;
 
     if (fread(sector + 0x014, 1, MODE2_FORM1_DATA_SIZE, in) != MODE2_FORM1_DATA_SIZE) {
@@ -142,20 +184,31 @@ static int decode_mode2_form1_sector(FILE *in, FILE *out, uint8_t *sector, uint3
     sector[0x12] = sector[0x16];
     sector[0x13] = sector[0x17];
     eccedc_generate(sector, SECTOR_TYPE_MODE2_FORM1);
+    /* EDC computed over 2336 bytes (Mode 2 format) for backward compatibility */
     *checkedc = edc_compute(*checkedc, sector + OFFSET_MODE2_SUBHEADER, SECTOR_SIZE_MODE2);
-    if (fwrite(sector + OFFSET_MODE2_SUBHEADER, SECTOR_SIZE_MODE2, 1, out) != 1) {
+    /* Output full 2352-byte raw sector with sync/header */
+    if (fwrite(sector, SECTOR_SIZE_RAW, 1, out) != 1) {
         fprintf(stderr, "Error: failed to write output\n");
         return -2;
     }
+    tracker->bytes_written += SECTOR_SIZE_RAW;
     return 0;
 }
 
 /*
  * Decode a Mode 2 Form 2 sector
  */
-static int decode_mode2_form2_sector(FILE *in, FILE *out, uint8_t *sector, uint32_t *checkedc) {
+static int decode_mode2_form2_sector(FILE *in, FILE *out, uint8_t *sector, uint32_t *checkedc,
+                                     output_tracker_t *tracker) {
+    /* Get current sector number from output position BEFORE writing */
+    uint32_t sector_num = get_current_sector(tracker);
+
     memset(sector, 0, SECTOR_SIZE_RAW);
+    /* Sync pattern: 00 FF FF FF FF FF FF FF FF FF FF 00 */
     memset(sector + 1, SYNC_BYTE_MIDDLE, 10);
+    /* MSF address computed from output position */
+    sector_to_msf(sector_num, sector + OFFSET_HEADER);
+    /* Mode byte */
     sector[OFFSET_MODE] = 0x02;
 
     if (fread(sector + 0x014, 1, MODE2_FORM2_DATA_SIZE, in) != MODE2_FORM2_DATA_SIZE) {
@@ -167,35 +220,44 @@ static int decode_mode2_form2_sector(FILE *in, FILE *out, uint8_t *sector, uint3
     sector[0x12] = sector[0x16];
     sector[0x13] = sector[0x17];
     eccedc_generate(sector, SECTOR_TYPE_MODE2_FORM2);
+    /* EDC computed over 2336 bytes (Mode 2 format) for backward compatibility */
     *checkedc = edc_compute(*checkedc, sector + OFFSET_MODE2_SUBHEADER, SECTOR_SIZE_MODE2);
-    if (fwrite(sector + OFFSET_MODE2_SUBHEADER, SECTOR_SIZE_MODE2, 1, out) != 1) {
+    /* Output full 2352-byte raw sector with sync/header */
+    if (fwrite(sector, SECTOR_SIZE_RAW, 1, out) != 1) {
         fprintf(stderr, "Error: failed to write output\n");
         return -2;
     }
+    tracker->bytes_written += SECTOR_SIZE_RAW;
     return 0;
 }
 
 /*
  * Main decoding function
  */
-static int unecmify(FILE *in, FILE *out, decode_stats_t *stats) {
+static int unecmify(FILE *in, FILE *out, decode_stats_t *stats, bool is_stdin) {
     uint32_t checkedc = 0;
     uint8_t sector[SECTOR_SIZE_RAW];
     progress_t progress;
+    output_tracker_t tracker = {0};
 
-    if (fseeko(in, 0, SEEK_END) != 0) {
-        fprintf(stderr, "Error: failed to seek input file\n");
-        return 1;
-    }
-    off_t endpos = ftello(in);
-    if (endpos < 0) {
-        fprintf(stderr, "Error: failed to determine input file size\n");
-        return 1;
-    }
-    progress_reset(&progress, endpos);
-    if (fseeko(in, 0, SEEK_SET) != 0) {
-        fprintf(stderr, "Error: failed to rewind input file\n");
-        return 1;
+    /* For regular files, get size for progress tracking; for stdin, skip */
+    if (!is_stdin) {
+        if (fseeko(in, 0, SEEK_END) != 0) {
+            fprintf(stderr, "Error: failed to seek input file\n");
+            return 1;
+        }
+        off_t endpos = ftello(in);
+        if (endpos < 0) {
+            fprintf(stderr, "Error: failed to determine input file size\n");
+            return 1;
+        }
+        progress_reset(&progress, endpos);
+        if (fseeko(in, 0, SEEK_SET) != 0) {
+            fprintf(stderr, "Error: failed to rewind input file\n");
+            return 1;
+        }
+    } else {
+        progress_reset(&progress, 0);
     }
 
     if (!read_magic_header(in)) {
@@ -225,6 +287,7 @@ static int unecmify(FILE *in, FILE *out, decode_stats_t *stats) {
                     fprintf(stderr, "Error: failed to write output\n");
                     goto writeerr;
                 }
+                tracker.bytes_written += b;
                 num -= b;
                 off_t pos = ftello(in);
                 if (pos >= 0)
@@ -240,16 +303,18 @@ static int unecmify(FILE *in, FILE *out, decode_stats_t *stats) {
                     if (stats)
                         stats->saw_mode1 = true;
                     ret = decode_mode1_sector(in, out, sector, &checkedc);
+                    if (ret == 0)
+                        tracker.bytes_written += SECTOR_SIZE_RAW;
                     break;
                 case SECTOR_TYPE_MODE2_FORM1:
                     if (stats)
                         stats->saw_mode2 = true;
-                    ret = decode_mode2_form1_sector(in, out, sector, &checkedc);
+                    ret = decode_mode2_form1_sector(in, out, sector, &checkedc, &tracker);
                     break;
                 case SECTOR_TYPE_MODE2_FORM2:
                     if (stats)
                         stats->saw_mode2 = true;
-                    ret = decode_mode2_form2_sector(in, out, sector, &checkedc);
+                    ret = decode_mode2_form2_sector(in, out, sector, &checkedc, &tracker);
                     break;
                 default:
                     fprintf(stderr, "Error: invalid sector type %u\n", type);
@@ -441,7 +506,7 @@ int main(int argc, char **argv) {
         }
     }
 
-    result = unecmify(fin, fout, &stats);
+    result = unecmify(fin, fout, &stats, is_stdio(infilename));
 
     /* Close output file before creating CUE */
     if (fout && !is_stdio(outfilename)) {

@@ -29,42 +29,173 @@ if [ ! -x "$UNECM_BIN" ]; then
     exit 1
 fi
 
-# Test 1: Mode 1 sector (2352 bytes)
-# Create a valid Mode 1 sector structure
+generate_sectors() {
+python3 - <<'PY' "$@"
+import sys, struct
+
+# Constants
+SYNC = bytes([0x00] + [0xFF] * 10 + [0x00])
+SECTOR_SIZE_RAW = 2352
+SECTOR_USER_DATA = 2048
+MODE2_FORM1_DATA_SIZE = 2052  # subheader copy (4) + user data (2048)
+MODE2_FORM2_DATA_SIZE = 2328  # subheader copy (4) + user data (2324)
+
+ECC_P_MAJOR = 86
+ECC_P_MINOR = 24
+ECC_P_MULT = 2
+ECC_P_INC = 86
+ECC_Q_MAJOR = 52
+ECC_Q_MINOR = 43
+ECC_Q_MULT = 86
+ECC_Q_INC = 88
+ECC_DATA_OFFSET = 0x0C
+OFFSET_MODE1_EDC = 0x810
+OFFSET_MODE1_RESERVED = 0x814
+OFFSET_MODE1_ECC_P = 0x81C
+OFFSET_MODE1_ECC_Q = 0x8C8
+OFFSET_MODE2_SUBHEADER = 0x10
+MODE2_EDC_OFFSET = 0x808
+MODE2_FORM2_EDC_OFFSET = 0x91C
+OFFSET_MODE2_FORM1_EDC = 0x818
+OFFSET_MODE2_FORM2_EDC = 0x92C
+
+def init_tables():
+    ecc_f = [0] * 256
+    ecc_b = [0] * 256
+    edc = [0] * 256
+    for i in range(256):
+        j = (i << 1) ^ (0x11D if (i & 0x80) else 0)
+        ecc_f[i] = j & 0xFF
+        ecc_b[i ^ j] = i
+        edc_val = i
+        for _ in range(8):
+            edc_val = (edc_val >> 1) ^ (0xD8018001 if (edc_val & 1) else 0)
+        edc[i] = edc_val & 0xFFFFFFFF
+    return ecc_f, ecc_b, edc
+
+ECC_F_LUT, ECC_B_LUT, EDC_LUT = init_tables()
+
+def edc_compute(edc, data):
+    for b in data:
+        edc = ((edc >> 8) ^ EDC_LUT[(edc ^ b) & 0xFF]) & 0xFFFFFFFF
+    return edc
+
+def edc_bytes(data):
+    val = edc_compute(0, data)
+    return struct.pack("<I", val)
+
+def ecc_compute_block(src, major_count, minor_count, major_mult, minor_inc):
+    size = major_count * minor_count
+    dest = bytearray(major_count * 2)
+    for major in range(major_count):
+        index = (major >> 1) * major_mult + (major & 1)
+        ecc_a = 0
+        ecc_b = 0
+        for _ in range(minor_count):
+            temp = src[index]
+            index += minor_inc
+            if index >= size:
+                index -= size
+            ecc_a ^= temp
+            ecc_b ^= temp
+            ecc_a = ECC_F_LUT[ecc_a]
+        ecc_a = ECC_B_LUT[ECC_F_LUT[ecc_a] ^ ecc_b]
+        dest[major] = ecc_a
+        dest[major + major_count] = ecc_a ^ ecc_b
+    return dest
+
+def ecc_generate(sector, zeroaddress):
+    if zeroaddress:
+        addr = sector[12:16]
+        sector[12:16] = b"\x00" * 4
+    # ECC P
+    ecc_p = ecc_compute_block(sector[ECC_DATA_OFFSET:], ECC_P_MAJOR, ECC_P_MINOR, ECC_P_MULT, ECC_P_INC)
+    sector[OFFSET_MODE1_ECC_P:OFFSET_MODE1_ECC_P + len(ecc_p)] = ecc_p
+    # ECC Q
+    ecc_q = ecc_compute_block(sector[ECC_DATA_OFFSET:], ECC_Q_MAJOR, ECC_Q_MINOR, ECC_Q_MULT, ECC_Q_INC)
+    sector[OFFSET_MODE1_ECC_Q:OFFSET_MODE1_ECC_Q + len(ecc_q)] = ecc_q
+    if zeroaddress:
+        sector[12:16] = addr
+
+def make_mode1(msf):
+    sector = bytearray(SECTOR_SIZE_RAW)
+    sector[0:12] = SYNC
+    sector[12:15] = msf
+    sector[15] = 0x01
+    for i in range(SECTOR_USER_DATA):
+        sector[0x10 + i] = i & 0xFF
+    # EDC over 0x000-0x80F
+    sector[OFFSET_MODE1_EDC:OFFSET_MODE1_EDC + 4] = edc_bytes(sector[:OFFSET_MODE1_EDC])
+    # Reserved zeroed
+    # ECC
+    ecc_generate(sector, False)
+    return bytes(sector)
+
+def make_mode2_form1(msf):
+    sector = bytearray(SECTOR_SIZE_RAW)
+    sector[0:12] = SYNC
+    sector[12:15] = msf
+    sector[15] = 0x02
+    # subheader + copy
+    sector[0x10:0x14] = bytes([0x00, 0x00, 0x08, 0x00])
+    sector[0x14:0x18] = sector[0x10:0x14]
+    for i in range(SECTOR_USER_DATA):
+        sector[0x18 + i] = (i * 3) & 0xFF
+    # EDC over bytes 0x010-0x817 (2048+8)
+    sector[OFFSET_MODE2_FORM1_EDC:OFFSET_MODE2_FORM1_EDC + 4] = edc_bytes(
+        sector[OFFSET_MODE2_SUBHEADER:OFFSET_MODE2_SUBHEADER + MODE2_EDC_OFFSET]
+    )
+    ecc_generate(sector, True)
+    return bytes(sector)
+
+def make_mode2_form2(msf):
+    sector = bytearray(SECTOR_SIZE_RAW)
+    sector[0:12] = SYNC
+    sector[12:15] = msf
+    sector[15] = 0x02
+    sector[0x10:0x14] = bytes([0x00, 0x00, 0x20, 0x00])
+    sector[0x14:0x18] = sector[0x10:0x14]
+    for i in range(2324):
+        sector[0x18 + i] = (i * 5) & 0xFF
+    # EDC over bytes 0x010-0x92B (0x91C bytes)
+    sector[OFFSET_MODE2_FORM2_EDC:OFFSET_MODE2_FORM2_EDC + 4] = edc_bytes(
+        sector[OFFSET_MODE2_SUBHEADER:OFFSET_MODE2_SUBHEADER + MODE2_FORM2_EDC_OFFSET]
+    )
+    # Note: Mode 2 Form 2 has NO ECC, only EDC - do not call ecc_generate here
+    return bytes(sector)
+
+def msf_from_index(index):
+    frame = index + 150
+    f = frame % 75
+    frame //= 75
+    s = frame % 60
+    m = frame // 60
+    # BCD
+    return bytes([(m // 10 << 4) | (m % 10), (s // 10 << 4) | (s % 10), (f // 10 << 4) | (f % 10)])
+
+def main():
+    mode = sys.argv[1]
+    count = int(sys.argv[2])
+    path = sys.argv[3]
+    builders = {
+        "mode1": make_mode1,
+        "mode2f1": make_mode2_form1,
+        "mode2f2": make_mode2_form2,
+    }
+    build = builders[mode]
+    with open(path, "wb") as f:
+        for i in range(count):
+            f.write(build(msf_from_index(i)))
+
+if __name__ == "__main__":
+    main()
+PY
+}
+
+# Test 1: Mode 1 sector (2352 bytes) with valid ECC/EDC
 echo "--- Test 1: Mode 1 sector roundtrip ---"
 MODE1_FILE="$TEST_DIR/mode1.bin"
-python3 -c "
-import sys
-
-# Mode 1 sector: 2352 bytes
-# Sync pattern (12 bytes): 00 FF FF FF FF FF FF FF FF FF FF 00
-sync = bytes([0x00] + [0xFF]*10 + [0x00])
-
-# Address (3 bytes) + Mode (1 byte = 0x01)
-header = bytes([0x00, 0x02, 0x00, 0x01])  # MSF address + mode 1
-
-# User data (2048 bytes)
-user_data = bytes([(i % 256) for i in range(2048)])
-
-# EDC placeholder (4 bytes) - will be calculated
-edc = bytes([0x00] * 4)
-
-# Reserved (8 bytes)
-reserved = bytes([0x00] * 8)
-
-# ECC P (172 bytes) and ECC Q (104 bytes) - placeholders
-ecc = bytes([0x00] * 276)
-
-# Construct raw sector (before ECC/EDC calculation)
-# For testing, we'll create multiple sectors with pattern data
-sector = sync + header + user_data + edc + reserved + ecc
-assert len(sector) == 2352, f'Sector size: {len(sector)}'
-
-# Write 10 sectors
-with open('$MODE1_FILE', 'wb') as f:
-    for i in range(10):
-        f.write(sector)
-"
+generate_sectors mode1 10 "$MODE1_FILE"
 
 ORIGINAL_SUM=$(sha256sum "$MODE1_FILE" | cut -d' ' -f1)
 echo "Original file checksum: $ORIGINAL_SUM"
@@ -178,27 +309,11 @@ else
     exit 1
 fi
 
-# Test 5: Mode 2 Form 1 sector
+# Test 5: Mode 2 Form 1 sector (with valid ECC/EDC)
 echo ""
 echo "--- Test 5: Mode 2 Form 1 sector roundtrip ---"
 MODE2F1_FILE="$TEST_DIR/mode2f1.bin"
-python3 -c "
-# Mode 2 Form 1 sector: 2352 bytes
-sync = bytes([0x00] + [0xFF]*10 + [0x00])
-header = bytes([0x00, 0x02, 0x00, 0x02])  # MSF + mode 2
-# Subheader (Form 1: bit 5 clear)
-subheader = bytes([0x00, 0x00, 0x08, 0x00])  # Form 1 submode
-subheader = subheader + subheader  # Duplicate
-# User data for Form 1 is 2048 bytes
-user_data = bytes([(i * 3) % 256 for i in range(2048)])
-# EDC (4 bytes) + ECC (276 bytes) = 280 bytes
-ecc_edc = bytes([0x00] * 280)
-sector = sync + header + subheader + user_data + ecc_edc
-assert len(sector) == 2352
-with open('$MODE2F1_FILE', 'wb') as f:
-    for i in range(5):
-        f.write(sector)
-"
+generate_sectors mode2f1 5 "$MODE2F1_FILE"
 
 ORIGINAL_SUM=$(sha256sum "$MODE2F1_FILE" | cut -d' ' -f1)
 "$ECM_BIN" "$MODE2F1_FILE" "$TEST_DIR/mode2f1.bin.ecm" 2>&1 || true
@@ -212,27 +327,11 @@ else
     exit 1
 fi
 
-# Test 6: Mode 2 Form 2 sector
+# Test 6: Mode 2 Form 2 sector (with valid EDC)
 echo ""
 echo "--- Test 6: Mode 2 Form 2 sector roundtrip ---"
 MODE2F2_FILE="$TEST_DIR/mode2f2.bin"
-python3 -c "
-# Mode 2 Form 2 sector: 2352 bytes
-sync = bytes([0x00] + [0xFF]*10 + [0x00])
-header = bytes([0x00, 0x02, 0x00, 0x02])  # MSF + mode 2
-# Subheader (Form 2: bit 5 set = 0x20)
-subheader = bytes([0x00, 0x00, 0x20, 0x00])
-subheader = subheader + subheader
-# User data for Form 2 is 2324 bytes
-user_data = bytes([(i * 5) % 256 for i in range(2324)])
-# EDC only (4 bytes)
-edc = bytes([0x00] * 4)
-sector = sync + header + subheader + user_data + edc
-assert len(sector) == 2352
-with open('$MODE2F2_FILE', 'wb') as f:
-    for i in range(5):
-        f.write(sector)
-"
+generate_sectors mode2f2 5 "$MODE2F2_FILE"
 
 ORIGINAL_SUM=$(sha256sum "$MODE2F2_FILE" | cut -d' ' -f1)
 "$ECM_BIN" "$MODE2F2_FILE" "$TEST_DIR/mode2f2.bin.ecm" 2>&1 || true

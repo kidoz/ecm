@@ -103,6 +103,8 @@ ECM analyzes CD image sectors and identifies patterns in ECC/EDC data:
 
 The encoder strips predictable ECC/EDC bytes; the decoder regenerates them perfectly.
 
+**Note:** Mode 1 sectors preserve original MSF addresses; Mode 2 sectors do not store MSF (per ECM format design). See [FORMAT.md](doc/FORMAT.md#limitations-and-notes) for details.
+
 ## File Format
 
 See [FORMAT.md](doc/FORMAT.md) for detailed ECM file format specification.
