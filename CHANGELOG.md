@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2025-12-12
+
+### Fixed
+
+- **Mode 2 MSF reconstruction** - Fixed incorrect MSF (Minute:Second:Frame) addresses when decoding Mode 2 sectors
+  - Sector addresses were wrong when literal bytes preceded Mode 2 sectors
+  - Now correctly tracks output position for MSF computation
+- **Pipe/stdout support** - Fixed Mode 2 decoding to stdout/pipes
+  - Previously `ftello()` returned -1 on non-seekable outputs, causing all sectors to get MSF 00:02:00
+  - Now uses explicit byte counting instead of file position queries
+
+### Changed
+
+- **C23 modernization** - Adopted C23 `nullptr` keyword for null pointer constants
+- **Code style** - Applied consistent formatting with clang-format
+- **Source headers** - Removed redundant license/copyright headers from individual source files (see LICENSE file)
+
+### Added
+
+- **clang-format configuration** - Added `.clang-format` for consistent code style
+- **stdin/stdout documentation** - Documented `-` parameter for stdin/stdout streaming
+
 ## [1.1.0] - 2025-12-10
 
 ### Added
@@ -58,5 +80,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Support for Mode 1 and Mode 2 (Form 1/Form 2) sectors
 - CUE file generation option
 
+[1.2.0]: https://github.com/kidoz/ecm/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/kidoz/ecm/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/kidoz/ecm/releases/tag/v1.0.0
