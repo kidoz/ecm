@@ -94,14 +94,14 @@ unecm game.bin.ecm restored.bin # Creates restored.bin
 
 ECM analyzes CD image sectors and identifies patterns in ECC/EDC data:
 
-| Sector Type | Size | Description |
-|-------------|------|-------------|
-| Mode 1 | 2352 bytes | Standard data sectors with full ECC/EDC |
-| Mode 2 Form 1 | 2336 bytes | XA data sectors with ECC/EDC |
-| Mode 2 Form 2 | 2336 bytes | XA audio/video sectors (EDC only) |
-| Literal | variable | Non-standard data (stored as-is) |
+| Sector Type | Raw Size | User Data | Description |
+|-------------|----------|-----------|-------------|
+| Mode 1 | 2352 bytes | 2048 bytes | Standard data sectors with full ECC/EDC |
+| Mode 2 Form 1 | 2352 bytes | 2048 bytes | XA data sectors with ECC/EDC |
+| Mode 2 Form 2 | 2352 bytes | 2324 bytes | XA audio/video sectors (EDC only) |
+| Literal | variable | variable | Non-standard data (stored as-is) |
 
-The encoder strips predictable ECC/EDC bytes; the decoder regenerates them perfectly.
+The encoder strips predictable ECC/EDC bytes; the decoder regenerates full 2352-byte raw sectors.
 
 **Note:** Mode 1 sectors preserve original MSF addresses; Mode 2 sectors do not store MSF (per ECM format design). See [FORMAT.md](doc/FORMAT.md#limitations-and-notes) for details.
 
