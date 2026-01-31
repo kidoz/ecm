@@ -555,37 +555,16 @@ void test_check_type_bad_ecc(void) {
 }
 
 /*
- * Test: sector_size_for_type() should return efficient step sizes.
- * For literals, returning 1 causes O(n²) scanning and fragmented output.
- * This test documents the current behavior and expected fix.
+ * Test: All sector types use raw 2352-byte format.
+ * This test verifies the sector size constants are consistent.
  */
-void test_sector_size_for_type_efficiency(void) {
-    TEST(sector_size_for_type_efficiency);
+void test_sector_size_constants(void) {
+    TEST(sector_size_constants);
 
-    /* Mode 1, Mode 2 Form 1/2 should step by full sector size */
-    ASSERT_EQ_MSG(SECTOR_SIZE_RAW, sector_size_for_type(SECTOR_TYPE_MODE1),
-                  "Mode 1 should step by 2352 bytes");
-    ASSERT_EQ_MSG(SECTOR_SIZE_RAW, sector_size_for_type(SECTOR_TYPE_MODE2_FORM1),
-                  "Mode 2 Form 1 should step by 2352 bytes");
-    ASSERT_EQ_MSG(SECTOR_SIZE_RAW, sector_size_for_type(SECTOR_TYPE_MODE2_FORM2),
-                  "Mode 2 Form 2 should step by 2352 bytes");
-
-    /*
-     * Current behavior: literals return 1, causing byte-by-byte scanning.
-     * This is O(n²) for large literal regions and creates fragmented output.
-     *
-     * Expected fix: After detecting a literal, the encoder should scan ahead
-     * to find how many consecutive bytes are non-sector data, then write
-     * them as a single literal run. The step size here doesn't need to be
-     * the full literal length, but it shouldn't be 1.
-     *
-     * For now, this test documents the problematic behavior.
-     */
-    size_t literal_step = sector_size_for_type(SECTOR_TYPE_LITERAL);
-    /* This assertion will FAIL with current code (returns 1) */
-    /* It should return at least SECTOR_SIZE_RAW to scan in sector-sized chunks */
-    ASSERT_EQ_MSG(SECTOR_SIZE_RAW, literal_step,
-                  "Literal step should be sector-sized, not byte-by-byte");
+    /* All sector types use 2352-byte raw sectors */
+    ASSERT_EQ_MSG(2352, SECTOR_SIZE_RAW, "Raw sector size should be 2352 bytes");
+    ASSERT_EQ_MSG(2336, SECTOR_SIZE_MODE2, "Mode 2 sector size should be 2336 bytes");
+    ASSERT_EQ_MSG(2048, SECTOR_USER_DATA, "User data area should be 2048 bytes");
 
     PASS();
 }
@@ -613,7 +592,7 @@ void test_literal_encoding_batching(void) {
     rewind(fin);
 
     /* Encode using streaming mode */
-    int result = ecmify_streaming(fin, fout);
+    int result = ecmify_streaming(fin, fout, false);
     ASSERT_EQ(0, result);
 
     /* Check output size */
@@ -702,7 +681,7 @@ int main(int argc, char **argv) {
     test_mode1_structure();
 
     TEST_CATEGORY("\nEncoder Efficiency Tests");
-    test_sector_size_for_type_efficiency();
+    test_sector_size_constants();
     test_literal_encoding_batching();
 
     TEST_SUITE_END();

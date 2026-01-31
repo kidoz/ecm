@@ -68,14 +68,29 @@ fmt-check:
     clang-format --dry-run --Werror src/*.c include/*.h tests/*.c
 
 # Run clang static analyzer
-analyze: clean
-    scan-build meson setup {{build_dir}}
-    scan-build meson compile -C {{build_dir}}
+analyze:
+    clang --analyze -std=c2x -Xanalyzer -analyzer-output=text -I include -I {{build_dir}} src/ecm.c src/unecm.c
 
-# Run valgrind memory check on ecm
+# Setup with Address Sanitizer
+setup-asan:
+    meson setup {{build_dir}} --buildtype=debug -Db_sanitize=address
+
+# Run ecm with Address Sanitizer (build with setup-asan first)
+asan-ecm *args:
+    {{build_dir}}/ecm {{args}}
+
+# Run unecm with Address Sanitizer (build with setup-asan first)
+asan-unecm *args:
+    {{build_dir}}/unecm {{args}}
+
+# Run valgrind memory check on ecm (Linux only)
 valgrind-ecm *args:
     valgrind --leak-check=full --show-leak-kinds=all --track-origins=yes {{build_dir}}/ecm {{args}}
 
-# Run valgrind memory check on unecm
+# Run valgrind memory check on unecm (Linux only)
 valgrind-unecm *args:
     valgrind --leak-check=full --show-leak-kinds=all --track-origins=yes {{build_dir}}/unecm {{args}}
+
+# Run performance benchmarks
+benchmark: build
+    meson test -C {{build_dir}} perf_benchmark --verbose

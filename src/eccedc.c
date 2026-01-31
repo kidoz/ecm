@@ -1,14 +1,20 @@
 #include "eccedc.h"
 #include <string.h>
+
+/* Thread-safe initialization: use C11 threads where available, POSIX otherwise */
+#if defined(__STDC_NO_THREADS__) || (defined(__APPLE__) && defined(__MACH__))
+#include <pthread.h>
+static pthread_once_t init_flag = PTHREAD_ONCE_INIT;
+#define call_once(flag, func) pthread_once(flag, func)
+#else
 #include <threads.h>
+static once_flag init_flag = ONCE_FLAG_INIT;
+#endif
 
 /* Lookup tables for ECC/EDC computation */
 static uint8_t ecc_f_lut[256];
 static uint8_t ecc_b_lut[256];
 static uint32_t edc_lut[256];
-
-/* Thread-safe initialization using C11 call_once */
-static once_flag init_flag = ONCE_FLAG_INIT;
 
 static void eccedc_init_tables(void) {
     for (uint32_t i = 0; i < 256; i++) {
@@ -223,4 +229,43 @@ void eccedc_generate(uint8_t *sector, sector_type_t type) {
             /* Invalid type - no operation */
             break;
     }
+}
+
+void edc_write_bytes(uint32_t edc, uint8_t *dest) {
+    if (dest == nullptr) {
+        return;
+    }
+    dest[0] = edc & 0xFF;
+    dest[1] = (edc >> 8) & 0xFF;
+    dest[2] = (edc >> 16) & 0xFF;
+    dest[3] = (edc >> 24) & 0xFF;
+}
+
+[[nodiscard]] bool edc_check_bytes(uint32_t edc, const uint8_t *src) {
+    if (src == nullptr) {
+        return false;
+    }
+    return src[0] == (edc & 0xFF) && src[1] == ((edc >> 8) & 0xFF) &&
+           src[2] == ((edc >> 16) & 0xFF) && src[3] == ((edc >> 24) & 0xFF);
+}
+
+void sector_init_sync(uint8_t *sector) {
+    if (sector == nullptr) {
+        return;
+    }
+    sector[0] = SYNC_BYTE_START;
+    for (int i = 1; i <= 10; i++) {
+        sector[i] = SYNC_BYTE_MIDDLE;
+    }
+    sector[11] = SYNC_BYTE_END;
+}
+
+void sector_copy_subheader(uint8_t *sector) {
+    if (sector == nullptr) {
+        return;
+    }
+    sector[OFFSET_MODE2_SUBHEADER + 0] = sector[OFFSET_MODE2_SUBHEADER + MODE2_SUBHEADER_SIZE + 0];
+    sector[OFFSET_MODE2_SUBHEADER + 1] = sector[OFFSET_MODE2_SUBHEADER + MODE2_SUBHEADER_SIZE + 1];
+    sector[OFFSET_MODE2_SUBHEADER + 2] = sector[OFFSET_MODE2_SUBHEADER + MODE2_SUBHEADER_SIZE + 2];
+    sector[OFFSET_MODE2_SUBHEADER + 3] = sector[OFFSET_MODE2_SUBHEADER + MODE2_SUBHEADER_SIZE + 3];
 }

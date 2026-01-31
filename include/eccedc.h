@@ -4,6 +4,30 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
+
+/*
+ * Debug logging macros
+ *
+ * ECM_DEBUG_LOG: Compile-time debug logging (disabled by default)
+ *   - Enable by defining ECM_DEBUG before including this header
+ *   - Outputs to stderr with [DEBUG] prefix
+ *
+ * ECM_VERBOSE: Runtime verbose logging
+ *   - Controlled by verbose flag passed at runtime
+ *   - Outputs to stderr
+ */
+#ifdef ECM_DEBUG
+#define ECM_DEBUG_LOG(fmt, ...) fprintf(stderr, "[DEBUG] " fmt "\n", ##__VA_ARGS__)
+#else
+#define ECM_DEBUG_LOG(fmt, ...) ((void)0)
+#endif
+
+#define ECM_VERBOSE(verbose, fmt, ...)                \
+    do {                                              \
+        if (verbose)                                  \
+            fprintf(stderr, fmt "\n", ##__VA_ARGS__); \
+    } while (0)
 
 /* Cross-platform strcasecmp compatibility */
 #if defined(WIN32) || defined(WIN64) || defined(_WIN32) || defined(_WIN64)
@@ -165,5 +189,38 @@ void ecc_generate(uint8_t *sector, bool zeroaddress);
  * @param type    Sector type (SECTOR_TYPE_MODE1, SECTOR_TYPE_MODE2_FORM1, SECTOR_TYPE_MODE2_FORM2)
  */
 void eccedc_generate(uint8_t *sector, sector_type_t type);
+
+/*
+ * Write EDC as 4 little-endian bytes to buffer.
+ *
+ * @param edc   EDC value to write
+ * @param dest  Destination buffer (4 bytes, must not be null)
+ */
+void edc_write_bytes(uint32_t edc, uint8_t *dest);
+
+/*
+ * Check if EDC matches at buffer location.
+ *
+ * @param edc  Expected EDC value
+ * @param src  Source buffer (4 bytes, must not be null)
+ * @return     true if EDC matches, false otherwise
+ */
+[[nodiscard]] bool edc_check_bytes(uint32_t edc, const uint8_t *src);
+
+/*
+ * Initialize sync pattern in sector buffer.
+ * Writes the 12-byte sync pattern: 00 FF FF FF FF FF FF FF FF FF FF 00
+ *
+ * @param sector  Sector buffer (at least 12 bytes, must not be null)
+ */
+void sector_init_sync(uint8_t *sector);
+
+/*
+ * Copy subheader bytes in Mode 2 sector.
+ * Copies bytes at 0x14-0x17 to 0x10-0x13.
+ *
+ * @param sector  Sector buffer (must not be null)
+ */
+void sector_copy_subheader(uint8_t *sector);
 
 #endif /* ECCEDC_H */

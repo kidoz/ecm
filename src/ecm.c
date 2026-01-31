@@ -61,15 +61,10 @@ static bool check_subheader_dup(const uint8_t *sector) {
 }
 
 /*
- * Verify EDC matches at given offset
- */
-static bool check_edc_match(const uint8_t *sector, uint32_t edc, int offset) {
-    return sector[offset + 0] == ((edc >> 0) & 0xFF) && sector[offset + 1] == ((edc >> 8) & 0xFF) &&
-           sector[offset + 2] == ((edc >> 16) & 0xFF) && sector[offset + 3] == ((edc >> 24) & 0xFF);
-}
-
-/*
  * Sector type detection for raw 2352-byte sectors (with sync/header)
+ *
+ * NOTE: Parameter is non-const because ecc_verify() temporarily modifies
+ * the address field for Mode 2 Form 1 verification (save/restore pattern).
  */
 static sector_type_t check_type_raw(uint8_t *sector) {
     bool can_be_mode1 = true;
@@ -103,7 +98,7 @@ static sector_type_t check_type_raw(uint8_t *sector) {
     /* EDC/ECC verification for Mode 1 */
     if (can_be_mode1) {
         uint32_t edc = edc_compute(0, sector, OFFSET_MODE1_EDC);
-        if (!check_edc_match(sector, edc, OFFSET_MODE1_EDC)) {
+        if (!edc_check_bytes(edc, sector + OFFSET_MODE1_EDC)) {
             return SECTOR_TYPE_LITERAL;
         }
         if (!ecc_verify(sector, false, sector + OFFSET_MODE1_ECC_P)) {
@@ -115,25 +110,23 @@ static sector_type_t check_type_raw(uint8_t *sector) {
     /* EDC/ECC verification for Mode 2 Form 1 */
     if (can_be_mode2_form1) {
         uint32_t edc = edc_compute(0, sector + OFFSET_MODE2_SUBHEADER, MODE2_EDC_OFFSET);
-        if (check_edc_match(sector + OFFSET_MODE2_SUBHEADER, edc, MODE2_EDC_OFFSET)) {
-            if (ecc_verify(sector, true, sector + 0x81C)) {
+        if (edc_check_bytes(edc, sector + OFFSET_MODE2_SUBHEADER + MODE2_EDC_OFFSET)) {
+            if (ecc_verify(sector, true, sector + OFFSET_MODE1_ECC_P)) {
                 return SECTOR_TYPE_MODE2_FORM1;
             }
         }
-        can_be_mode2_form1 = false;
     }
 
     /* EDC verification for Mode 2 Form 2 */
     if (can_be_mode2_form2) {
         uint32_t edc = edc_compute(0, sector + OFFSET_MODE2_SUBHEADER, MODE2_FORM2_EDC_OFFSET);
-        if (check_edc_match(sector + OFFSET_MODE2_SUBHEADER, edc, MODE2_FORM2_EDC_OFFSET)) {
+        if (edc_check_bytes(edc, sector + OFFSET_MODE2_SUBHEADER + MODE2_FORM2_EDC_OFFSET)) {
             return SECTOR_TYPE_MODE2_FORM2;
         }
     }
 
     return SECTOR_TYPE_LITERAL;
 }
-
 
 /*
  * Encode a type/count combo to output
@@ -213,8 +206,8 @@ static int write_sector_data(FILE *in, FILE *out, uint32_t *edc, sector_type_t t
             /* EDC over 2336 bytes (Mode 2 format, offset 0x10-0x92F) for compatibility */
             *edc = edc_compute(*edc, buf + OFFSET_MODE2_SUBHEADER, SECTOR_SIZE_MODE2);
             /* Write duplicated subheader (4 bytes) + user data (2048 bytes) */
-            if (fwrite(buf + OFFSET_MODE2_SUBHEADER + MODE2_SUBHEADER_SIZE, 1, MODE2_FORM1_DATA_SIZE,
-                       out) != MODE2_FORM1_DATA_SIZE) {
+            if (fwrite(buf + OFFSET_MODE2_SUBHEADER + MODE2_SUBHEADER_SIZE, 1,
+                       MODE2_FORM1_DATA_SIZE, out) != MODE2_FORM1_DATA_SIZE) {
                 fprintf(stderr, "Error: failed to write output\n");
                 return -1;
             }
@@ -224,8 +217,8 @@ static int write_sector_data(FILE *in, FILE *out, uint32_t *edc, sector_type_t t
             /* EDC over 2336 bytes (Mode 2 format, offset 0x10-0x92F) for compatibility */
             *edc = edc_compute(*edc, buf + OFFSET_MODE2_SUBHEADER, SECTOR_SIZE_MODE2);
             /* Write duplicated subheader (4 bytes) + user data (2324 bytes) */
-            if (fwrite(buf + OFFSET_MODE2_SUBHEADER + MODE2_SUBHEADER_SIZE, 1, MODE2_FORM2_DATA_SIZE,
-                       out) != MODE2_FORM2_DATA_SIZE) {
+            if (fwrite(buf + OFFSET_MODE2_SUBHEADER + MODE2_SUBHEADER_SIZE, 1,
+                       MODE2_FORM2_DATA_SIZE, out) != MODE2_FORM2_DATA_SIZE) {
                 fprintf(stderr, "Error: failed to write output\n");
                 return -1;
             }
@@ -284,32 +277,51 @@ static int flush_sector_run(uint32_t *edc, sector_type_t type, unsigned count, F
 }
 
 /*
- * Get sector size for type.
- * All sector types (Mode 1, Mode 2) use raw 2352-byte format.
+ * Write magic header to output file.
  */
-static size_t sector_size_for_type(sector_type_t type) {
-    switch (type) {
-        case SECTOR_TYPE_LITERAL:
-            return SECTOR_SIZE_RAW;
-        case SECTOR_TYPE_MODE1:
-        case SECTOR_TYPE_MODE2_FORM1:
-        case SECTOR_TYPE_MODE2_FORM2:
-            return SECTOR_SIZE_RAW;
-        default:
-            return 1;
+[[nodiscard]] static int write_magic_header(FILE *out) {
+    if (fputc(ECM_MAGIC_E, out) == EOF || fputc(ECM_MAGIC_C, out) == EOF ||
+        fputc(ECM_MAGIC_M, out) == EOF || fputc(ECM_MAGIC_NULL, out) == EOF) {
+        fprintf(stderr, "Error: failed to write magic header\n");
+        return -1;
     }
+    return 0;
 }
 
 /*
- * Encode sector data from a buffer (for streaming mode).
+ * Write EDC checksum to output file.
+ */
+[[nodiscard]] static int write_edc_checksum(FILE *out, uint32_t edc) {
+    if (fputc((edc >> 0) & 0xFF, out) == EOF || fputc((edc >> 8) & 0xFF, out) == EOF ||
+        fputc((edc >> 16) & 0xFF, out) == EOF || fputc((edc >> 24) & 0xFF, out) == EOF) {
+        fprintf(stderr, "Error: failed to write EDC checksum\n");
+        return -1;
+    }
+    return 0;
+}
+
+/*
+ * Print encoding statistics report.
+ */
+static void print_report(const unsigned typetally[4], int64_t total_in, FILE *out) {
+    fprintf(stderr, "Literal bytes........... %10u\n", typetally[SECTOR_TYPE_LITERAL]);
+    fprintf(stderr, "Mode 1 sectors.......... %10u\n", typetally[SECTOR_TYPE_MODE1]);
+    fprintf(stderr, "Mode 2 form 1 sectors... %10u\n", typetally[SECTOR_TYPE_MODE2_FORM1]);
+    fprintf(stderr, "Mode 2 form 2 sectors... %10u\n", typetally[SECTOR_TYPE_MODE2_FORM2]);
+    off_t outpos = ftello(out);
+    fprintf(stderr, "Encoded %lld bytes -> %lld bytes\n", (long long)total_in,
+            (long long)(outpos >= 0 ? outpos : 0));
+    fprintf(stderr, "Done.\n");
+}
+
+/*
+ * Encode sector data from a buffer.
  */
 static int encode_sector_from_buffer(const uint8_t *buf, FILE *out, uint32_t *edc,
                                      sector_type_t type) {
     switch (type) {
         case SECTOR_TYPE_MODE1:
-            /* EDC over full 2352 bytes */
             *edc = edc_compute(*edc, buf, SECTOR_SIZE_RAW);
-            /* Write address (3 bytes) + user data (2048 bytes) */
             if (fwrite(buf + OFFSET_HEADER, 1, MODE1_ADDRESS_SIZE, out) != MODE1_ADDRESS_SIZE ||
                 fwrite(buf + OFFSET_MODE1_DATA, 1, SECTOR_USER_DATA, out) != SECTOR_USER_DATA) {
                 return -1;
@@ -317,21 +329,17 @@ static int encode_sector_from_buffer(const uint8_t *buf, FILE *out, uint32_t *ed
             break;
 
         case SECTOR_TYPE_MODE2_FORM1:
-            /* EDC over 2336 bytes (Mode 2 format) for compatibility */
             *edc = edc_compute(*edc, buf + OFFSET_MODE2_SUBHEADER, SECTOR_SIZE_MODE2);
-            /* Write duplicated subheader (4 bytes) + user data (2048 bytes) */
-            if (fwrite(buf + OFFSET_MODE2_SUBHEADER + MODE2_SUBHEADER_SIZE, 1, MODE2_FORM1_DATA_SIZE,
-                       out) != MODE2_FORM1_DATA_SIZE) {
+            if (fwrite(buf + OFFSET_MODE2_SUBHEADER + MODE2_SUBHEADER_SIZE, 1,
+                       MODE2_FORM1_DATA_SIZE, out) != MODE2_FORM1_DATA_SIZE) {
                 return -1;
             }
             break;
 
         case SECTOR_TYPE_MODE2_FORM2:
-            /* EDC over 2336 bytes (Mode 2 format) for compatibility */
             *edc = edc_compute(*edc, buf + OFFSET_MODE2_SUBHEADER, SECTOR_SIZE_MODE2);
-            /* Write duplicated subheader (4 bytes) + user data (2324 bytes) */
-            if (fwrite(buf + OFFSET_MODE2_SUBHEADER + MODE2_SUBHEADER_SIZE, 1, MODE2_FORM2_DATA_SIZE,
-                       out) != MODE2_FORM2_DATA_SIZE) {
+            if (fwrite(buf + OFFSET_MODE2_SUBHEADER + MODE2_SUBHEADER_SIZE, 1,
+                       MODE2_FORM2_DATA_SIZE, out) != MODE2_FORM2_DATA_SIZE) {
                 return -1;
             }
             break;
@@ -344,58 +352,46 @@ static int encode_sector_from_buffer(const uint8_t *buf, FILE *out, uint32_t *ed
 
 /*
  * Streaming mode encoder - processes input without seeking.
- * Less efficient than batch mode but works with stdin/pipes.
+ * Works with stdin/pipes.
+ *
+ * Trade-offs vs batch mode:
+ * - Lower memory usage (~2.4 KB vs ~1 MB buffer)
+ * - Processes one sector at a time (no batching of same-type runs)
+ * - Higher output overhead for consecutive same-type sectors
+ * - Works with non-seekable streams (stdin, pipes)
  */
-static int ecmify_streaming(FILE *in, FILE *out) {
+static int ecmify_streaming(FILE *in, FILE *out, bool verbose) {
+    static const char *type_names[] = {"literal", "mode1", "mode2f1", "mode2f2"};
     uint8_t buf[SECTOR_SIZE_RAW + INPUT_QUEUE_PADDING];
     uint32_t inedc = 0;
-    sector_type_t curtype = SECTOR_TYPE_LITERAL;
-    unsigned curtypecount = 0;
     unsigned typetally[4] = {0};
     int64_t total_in = 0;
-    size_t dataavail = 0;
+    unsigned sector_num = 0;
 
-    /* Write magic header */
-    if (fputc(ECM_MAGIC_E, out) == EOF || fputc(ECM_MAGIC_C, out) == EOF ||
-        fputc(ECM_MAGIC_M, out) == EOF || fputc(ECM_MAGIC_NULL, out) == EOF) {
-        fprintf(stderr, "Error: failed to write magic header\n");
+    ECM_VERBOSE(verbose, "Using streaming mode (stdin/pipe)");
+
+    if (write_magic_header(out) < 0) {
         return 1;
     }
 
-    /* Read first chunk */
-    dataavail = fread(buf + INPUT_QUEUE_PADDING, 1, SECTOR_SIZE_RAW, in);
-    total_in += (int64_t)dataavail;
+    for (;;) {
+        size_t dataavail = fread(buf + INPUT_QUEUE_PADDING, 1, SECTOR_SIZE_RAW, in);
+        if (dataavail == 0) {
+            break;
+        }
+        total_in += (int64_t)dataavail;
 
-    while (dataavail > 0) {
         sector_type_t detecttype;
-
-        /* Detect sector type */
         if (dataavail < SECTOR_SIZE_RAW) {
             detecttype = SECTOR_TYPE_LITERAL;
         } else {
             detecttype = check_type_raw(buf + INPUT_QUEUE_PADDING);
         }
 
-        /* Handle type change - flush previous run */
-        if (curtypecount > 0 && detecttype != curtype) {
-            if (write_type_count(out, curtype, curtypecount) < 0) {
-                fprintf(stderr, "Error: failed to write output\n");
-                return 1;
-            }
-            curtypecount = 0;
-        }
+        ECM_VERBOSE(verbose, "Sector %u: type=%s, size=%zu", sector_num++, type_names[detecttype],
+                    dataavail);
 
-        /* Handle current sector/data */
         if (detecttype == SECTOR_TYPE_LITERAL) {
-            /* Flush any pending run first */
-            if (curtypecount > 0) {
-                if (write_type_count(out, curtype, curtypecount) < 0) {
-                    fprintf(stderr, "Error: failed to write output\n");
-                    return 1;
-                }
-                curtypecount = 0;
-            }
-            /* Write literal data one byte at a time for now */
             if (write_type_count(out, SECTOR_TYPE_LITERAL, (unsigned)dataavail) < 0) {
                 fprintf(stderr, "Error: failed to write output\n");
                 return 1;
@@ -406,63 +402,44 @@ static int ecmify_streaming(FILE *in, FILE *out) {
                 return 1;
             }
             typetally[SECTOR_TYPE_LITERAL] += (unsigned)dataavail;
-            dataavail = 0;
         } else {
-            /* Sector type - accumulate run and encode */
-            curtype = detecttype;
-            curtypecount++;
-            typetally[curtype]++;
-
-            /* For simplicity in streaming mode, flush each sector immediately */
-            if (write_type_count(out, curtype, 1) < 0) {
+            typetally[detecttype]++;
+            if (write_type_count(out, detecttype, 1) < 0) {
                 fprintf(stderr, "Error: failed to write output\n");
                 return 1;
             }
-            if (encode_sector_from_buffer(buf + INPUT_QUEUE_PADDING, out, &inedc, curtype) < 0) {
+            if (encode_sector_from_buffer(buf + INPUT_QUEUE_PADDING, out, &inedc, detecttype) < 0) {
                 fprintf(stderr, "Error: failed to write output\n");
                 return 1;
             }
-            curtypecount = 0;
-
-            /* Advance past this sector */
-            dataavail = 0;
         }
-
-        /* Read next chunk */
-        dataavail = fread(buf + INPUT_QUEUE_PADDING, 1, SECTOR_SIZE_RAW, in);
-        total_in += (int64_t)dataavail;
     }
 
-    /* End-of-records indicator */
     if (write_type_count(out, 0, 0) < 0) {
         fprintf(stderr, "Error: failed to write end marker\n");
         return 1;
     }
 
-    /* Write EDC checksum */
-    if (fputc((inedc >> 0) & 0xFF, out) == EOF || fputc((inedc >> 8) & 0xFF, out) == EOF ||
-        fputc((inedc >> 16) & 0xFF, out) == EOF || fputc((inedc >> 24) & 0xFF, out) == EOF) {
-        fprintf(stderr, "Error: failed to write EDC checksum\n");
+    if (write_edc_checksum(out, inedc) < 0) {
         return 1;
     }
 
-    /* Show report */
-    fprintf(stderr, "Literal bytes........... %10u\n", typetally[SECTOR_TYPE_LITERAL]);
-    fprintf(stderr, "Mode 1 sectors.......... %10u\n", typetally[SECTOR_TYPE_MODE1]);
-    fprintf(stderr, "Mode 2 form 1 sectors... %10u\n", typetally[SECTOR_TYPE_MODE2_FORM1]);
-    fprintf(stderr, "Mode 2 form 2 sectors... %10u\n", typetally[SECTOR_TYPE_MODE2_FORM2]);
-    off_t outpos = ftello(out);
-    fprintf(stderr, "Encoded %lld bytes -> %lld bytes\n", (long long)total_in,
-            (long long)(outpos >= 0 ? outpos : 0));
-    fprintf(stderr, "Done.\n");
-
+    print_report(typetally, total_in, out);
     return 0;
 }
 
 /*
- * Main encoding function
+ * Batch mode encoding function - uses seeking for better performance.
+ *
+ * Trade-offs vs streaming mode:
+ * - Uses ~1 MB input buffer for efficient I/O
+ * - Batches consecutive same-type sectors into single records
+ * - Better compression ratio for homogeneous sector runs
+ * - Requires seekable input (regular files only)
+ * - Two-pass: analyze then encode
  */
-static int ecmify(FILE *in, FILE *out, bool is_stdin) {
+static int ecmify(FILE *in, FILE *out, bool verbose) {
+    static const char *type_names[] = {"literal", "mode1", "mode2f1", "mode2f2"};
     uint8_t *inputqueue = nullptr;
     uint32_t inedc = 0;
     sector_type_t curtype = SECTOR_TYPE_LITERAL;
@@ -470,7 +447,7 @@ static int ecmify(FILE *in, FILE *out, bool is_stdin) {
     int64_t curtype_in_start = 0;
     int64_t incheckpos = 0;
     int64_t inbufferpos = 0;
-    int64_t intotallength = -1; /* -1 means unknown (streaming mode) */
+    int64_t intotallength;
     size_t inqueuestart = 0;
     size_t dataavail = 0;
     unsigned typetally[4] = {0};
@@ -478,38 +455,34 @@ static int ecmify(FILE *in, FILE *out, bool is_stdin) {
     int result = 0;
     bool first_run = true;
 
+    ECM_VERBOSE(verbose, "Using batch mode (seekable file)");
+
     inputqueue = malloc(INPUT_QUEUE_SIZE);
     if (!inputqueue) {
         fprintf(stderr, "Error: failed to allocate input buffer\n");
         return 1;
     }
 
-    /* For regular files, get size for progress tracking; for stdin, use streaming mode */
-    if (!is_stdin) {
-        if (fseeko(in, 0, SEEK_END) != 0) {
-            fprintf(stderr, "Error: failed to seek input file\n");
-            free(inputqueue);
-            return 1;
-        }
-        off_t endpos = ftello(in);
-        if (endpos < 0) {
-            fprintf(stderr, "Error: failed to determine input file size\n");
-            free(inputqueue);
-            return 1;
-        }
-        intotallength = (int64_t)endpos;
-        if (fseeko(in, 0, SEEK_SET) != 0) {
-            fprintf(stderr, "Error: failed to rewind input file\n");
-            free(inputqueue);
-            return 1;
-        }
+    if (fseeko(in, 0, SEEK_END) != 0) {
+        fprintf(stderr, "Error: failed to seek input file\n");
+        free(inputqueue);
+        return 1;
     }
-    progress_reset(&progress, intotallength > 0 ? intotallength : 0);
+    off_t endpos = ftello(in);
+    if (endpos < 0) {
+        fprintf(stderr, "Error: failed to determine input file size\n");
+        free(inputqueue);
+        return 1;
+    }
+    intotallength = (int64_t)endpos;
+    if (fseeko(in, 0, SEEK_SET) != 0) {
+        fprintf(stderr, "Error: failed to rewind input file\n");
+        free(inputqueue);
+        return 1;
+    }
+    progress_reset(&progress, intotallength);
 
-    /* Write magic header */
-    if (fputc(ECM_MAGIC_E, out) == EOF || fputc(ECM_MAGIC_C, out) == EOF ||
-        fputc(ECM_MAGIC_M, out) == EOF || fputc(ECM_MAGIC_NULL, out) == EOF) {
-        fprintf(stderr, "Error: failed to write magic header\n");
+    if (write_magic_header(out) < 0) {
         free(inputqueue);
         return 1;
     }
@@ -533,7 +506,8 @@ static int ecmify(FILE *in, FILE *out, bool is_stdin) {
                     result = 1;
                     goto cleanup;
                 }
-                if (fread(inputqueue + INPUT_QUEUE_PADDING + dataavail, 1, willread, in) != willread) {
+                if (fread(inputqueue + INPUT_QUEUE_PADDING + dataavail, 1, willread, in) !=
+                    willread) {
                     fprintf(stderr, "Error: failed to read input file\n");
                     result = 1;
                     goto cleanup;
@@ -557,6 +531,8 @@ static int ecmify(FILE *in, FILE *out, bool is_stdin) {
         /* Flush previous run if type changed */
         if (!first_run && detecttype != curtype) {
             if (curtypecount) {
+                ECM_VERBOSE(verbose, "Flushing batch: type=%s, count=%d", type_names[curtype],
+                            curtypecount);
                 if (fseeko(in, (off_t)curtype_in_start, SEEK_SET) != 0) {
                     fprintf(stderr, "Error: failed to seek input file\n");
                     result = 1;
@@ -589,7 +565,7 @@ static int ecmify(FILE *in, FILE *out, bool is_stdin) {
             }
             curtypecount += (int)step;
         } else {
-            step = sector_size_for_type(curtype);
+            step = SECTOR_SIZE_RAW;
             curtypecount++;
         }
 
@@ -601,6 +577,8 @@ static int ecmify(FILE *in, FILE *out, bool is_stdin) {
 
     /* Flush final run */
     if (curtypecount) {
+        ECM_VERBOSE(verbose, "Flushing final batch: type=%s, count=%d", type_names[curtype],
+                    curtypecount);
         if (fseeko(in, (off_t)curtype_in_start, SEEK_SET) != 0) {
             fprintf(stderr, "Error: failed to seek input file\n");
             result = 1;
@@ -613,30 +591,18 @@ static int ecmify(FILE *in, FILE *out, bool is_stdin) {
         }
     }
 
-    /* End-of-records indicator */
     if (write_type_count(out, 0, 0) < 0) {
         fprintf(stderr, "Error: failed to write end marker\n");
         result = 1;
         goto cleanup;
     }
 
-    /* Write EDC checksum */
-    if (fputc((inedc >> 0) & 0xFF, out) == EOF || fputc((inedc >> 8) & 0xFF, out) == EOF ||
-        fputc((inedc >> 16) & 0xFF, out) == EOF || fputc((inedc >> 24) & 0xFF, out) == EOF) {
-        fprintf(stderr, "Error: failed to write EDC checksum\n");
+    if (write_edc_checksum(out, inedc) < 0) {
         result = 1;
         goto cleanup;
     }
 
-    /* Show report */
-    fprintf(stderr, "Literal bytes........... %10u\n", typetally[SECTOR_TYPE_LITERAL]);
-    fprintf(stderr, "Mode 1 sectors.......... %10u\n", typetally[SECTOR_TYPE_MODE1]);
-    fprintf(stderr, "Mode 2 form 1 sectors... %10u\n", typetally[SECTOR_TYPE_MODE2_FORM1]);
-    fprintf(stderr, "Mode 2 form 2 sectors... %10u\n", typetally[SECTOR_TYPE_MODE2_FORM2]);
-    off_t outpos = ftello(out);
-    fprintf(stderr, "Encoded %lld bytes -> %lld bytes\n", (long long)intotallength,
-            (long long)(outpos >= 0 ? outpos : 0));
-    fprintf(stderr, "Done.\n");
+    print_report(typetally, intotallength, out);
 
 cleanup:
     free(inputqueue);
@@ -656,22 +622,30 @@ int main(int argc, char **argv) {
     const char *infilename;
     char *outfilename = nullptr;
     bool outfilename_allocated = false;
+    bool verbose = false;
     int result = 0;
+    int argoffset = 0;
 
     banner();
     eccedc_init();
 
-    if (argc != 2 && argc != 3) {
-        fprintf(stderr, "usage: %s cdimagefile [ecmfile]\n", argv[0]);
+    /* Check for -v/--verbose option */
+    if (argc >= 2 && (strcmp(argv[1], "-v") == 0 || strcmp(argv[1], "--verbose") == 0)) {
+        verbose = true;
+        argoffset = 1;
+    }
+
+    if (argc < 2 + argoffset || argc > 3 + argoffset) {
+        fprintf(stderr, "usage: %s [-v|--verbose] cdimagefile [ecmfile]\n", argv[0]);
         fprintf(stderr, "       use '-' for stdin/stdout\n");
         return 1;
     }
 
-    infilename = argv[1];
+    infilename = argv[1 + argoffset];
 
     /* Determine output filename */
-    if (argc == 3) {
-        outfilename = argv[2];
+    if (argc == 3 + argoffset) {
+        outfilename = argv[2 + argoffset];
     } else if (is_stdio(infilename)) {
         outfilename = "-";
     } else {
@@ -713,9 +687,9 @@ int main(int argc, char **argv) {
 
     /* Use streaming mode for stdin, batch mode for regular files */
     if (is_stdio(infilename)) {
-        result = ecmify_streaming(fin, fout);
+        result = ecmify_streaming(fin, fout, verbose);
     } else {
-        result = ecmify(fin, fout, false);
+        result = ecmify(fin, fout, verbose);
     }
 
 cleanup:

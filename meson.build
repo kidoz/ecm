@@ -21,11 +21,15 @@ version_h = configure_file(
 inc = include_directories('include')
 inc_build = include_directories('.')
 
+# Thread library dependency (pthread on POSIX systems without C11 threads)
+thread_dep = dependency('threads', required: false)
+
 # Shared ECC/EDC library
 eccedc_lib = static_library(
   'eccedc',
   'src/eccedc.c',
   include_directories: inc,
+  dependencies: thread_dep,
 )
 
 ecm_exe = executable(

@@ -393,7 +393,7 @@ void test_unecmify_bad_magic(void) {
     rewind(fin);
 
     /* Should fail with wrong magic */
-    int result = unecmify(fin, fout, nullptr, false);
+    int result = unecmify(fin, fout, nullptr, false, false);
     ASSERT_TRUE(result != 0);
 
     fclose(fin);
@@ -422,7 +422,7 @@ void test_unecmify_truncated_header(void) {
     rewind(fin);
 
     /* Should fail with truncated header */
-    int result = unecmify(fin, fout, nullptr, false);
+    int result = unecmify(fin, fout, nullptr, false, false);
     ASSERT_TRUE(result != 0);
 
     fclose(fin);
@@ -474,7 +474,7 @@ void test_unecmify_bad_checksum(void) {
     rewind(fin);
 
     /* Should fail due to wrong checksum */
-    int result = unecmify(fin, fout, nullptr, false);
+    int result = unecmify(fin, fout, nullptr, false, false);
     ASSERT_TRUE(result != 0);
 
     fclose(fin);
@@ -516,7 +516,7 @@ void test_unecmify_empty_data(void) {
 
     rewind(fin);
 
-    int result = unecmify(fin, fout, nullptr, false);
+    int result = unecmify(fin, fout, nullptr, false, false);
     ASSERT_EQ(0, result);
 
     /* Output should be empty */
@@ -553,7 +553,7 @@ void test_unecmify_truncated_type_count(void) {
 
     rewind(fin);
 
-    int result = unecmify(fin, fout, nullptr, false);
+    int result = unecmify(fin, fout, nullptr, false, false);
     ASSERT_TRUE(result != 0);
 
     fclose(fin);
@@ -716,7 +716,7 @@ void test_mode2_output_size_compatibility(void) {
     rewind(fin);
 
     decode_stats_t stats = {false, false};
-    int result = unecmify(fin, fout, &stats, false);
+    int result = unecmify(fin, fout, &stats, false, false);
     ASSERT_EQ(0, result);
 
     /* Check output size */
@@ -803,7 +803,7 @@ void test_mode2_form1_roundtrip_full_sector(void) {
     rewind(fin);
 
     /* Decode */
-    int result = unecmify(fin, fout, nullptr, false);
+    int result = unecmify(fin, fout, nullptr, false, false);
     ASSERT_EQ(0, result);
 
     /* Verify output matches original sector */

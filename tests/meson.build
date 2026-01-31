@@ -14,9 +14,20 @@ test_unecm_exe = executable(
   link_with: eccedc_lib,
 )
 
+# Performance benchmarks
+benchmark_exe = executable(
+  'ecm_benchmark',
+  'benchmark.c',
+  include_directories: [inc, inc_build],
+  link_with: eccedc_lib,
+)
+
 # Register unit tests with Meson
 test('unit_ecm', test_ecm_exe)
 test('unit_unecm', test_unecm_exe)
+
+# Register benchmark (use 'meson test -C build perf_benchmark' or 'just benchmark')
+test('perf_benchmark', benchmark_exe, is_parallel: false, timeout: 120)
 
 # Integration tests (roundtrip)
 roundtrip_test = find_program('roundtrip_test.sh')

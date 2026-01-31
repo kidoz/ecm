@@ -281,8 +281,9 @@ if [ ! -f "$TEST_DIR/empty_decoded.bin" ]; then
     exit 1
 fi
 
-ORIGINAL_SIZE=$(stat -c%s "$EMPTY_FILE")
-DECODED_SIZE=$(stat -c%s "$TEST_DIR/empty_decoded.bin")
+# Cross-platform file size: use wc -c (works on both Linux and macOS)
+ORIGINAL_SIZE=$(wc -c < "$EMPTY_FILE" | tr -d ' ')
+DECODED_SIZE=$(wc -c < "$TEST_DIR/empty_decoded.bin" | tr -d ' ')
 if [ "$ORIGINAL_SIZE" = "$DECODED_SIZE" ]; then
     echo "PASS: Empty file roundtrip successful"
 else

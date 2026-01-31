@@ -88,19 +88,37 @@ static uint32_t get_current_sector(const output_tracker_t *tracker) {
 }
 
 /*
+ * Initialize a Mode 2 sector with sync pattern, MSF address, and mode byte.
+ */
+static void init_mode2_sector(uint8_t *sector, uint32_t sector_num) {
+    memset(sector, 0, SECTOR_SIZE_RAW);
+    sector_init_sync(sector);
+    sector_to_msf(sector_num, sector + OFFSET_HEADER);
+    sector[OFFSET_MODE] = 0x02;
+}
+
+/*
  * Read and verify magic header
  */
 static bool read_magic_header(FILE *in) {
     int magic[4];
-    magic[0] = fgetc(in);
-    magic[1] = fgetc(in);
-    magic[2] = fgetc(in);
-    magic[3] = fgetc(in);
-
-    if (magic[0] == EOF || magic[1] == EOF || magic[2] == EOF || magic[3] == EOF) {
+    if ((magic[0] = fgetc(in)) == EOF) {
         fprintf(stderr, "Error: failed to read header\n");
         return false;
     }
+    if ((magic[1] = fgetc(in)) == EOF) {
+        fprintf(stderr, "Error: failed to read header\n");
+        return false;
+    }
+    if ((magic[2] = fgetc(in)) == EOF) {
+        fprintf(stderr, "Error: failed to read header\n");
+        return false;
+    }
+    if ((magic[3] = fgetc(in)) == EOF) {
+        fprintf(stderr, "Error: failed to read header\n");
+        return false;
+    }
+
     if (magic[0] != ECM_MAGIC_E || magic[1] != ECM_MAGIC_C || magic[2] != ECM_MAGIC_M ||
         magic[3] != ECM_MAGIC_NULL) {
         fprintf(stderr, "Header not found!\n");
@@ -139,9 +157,10 @@ static bool read_type_count(FILE *in, unsigned *type, unsigned *num) {
 /*
  * Decode a Mode 1 sector
  */
-static int decode_mode1_sector(FILE *in, FILE *out, uint8_t *sector, uint32_t *checkedc) {
+static int decode_mode1_sector(FILE *in, FILE *out, uint8_t *sector, uint32_t *checkedc,
+                               output_tracker_t *tracker) {
     memset(sector, 0, SECTOR_SIZE_RAW);
-    memset(sector + 1, SYNC_BYTE_MIDDLE, 10);
+    sector_init_sync(sector);
     sector[OFFSET_MODE] = 0x01;
 
     if (fread(sector + OFFSET_HEADER, 1, MODE1_ADDRESS_SIZE, in) != MODE1_ADDRESS_SIZE) {
@@ -156,6 +175,7 @@ static int decode_mode1_sector(FILE *in, FILE *out, uint8_t *sector, uint32_t *c
         fprintf(stderr, "Error: failed to write output\n");
         return -2;
     }
+    tracker->bytes_written += SECTOR_SIZE_RAW;
     return 0;
 }
 
@@ -164,29 +184,16 @@ static int decode_mode1_sector(FILE *in, FILE *out, uint8_t *sector, uint32_t *c
  */
 static int decode_mode2_form1_sector(FILE *in, FILE *out, uint8_t *sector, uint32_t *checkedc,
                                      output_tracker_t *tracker) {
-    /* Get current sector number from output position BEFORE writing */
     uint32_t sector_num = get_current_sector(tracker);
+    init_mode2_sector(sector, sector_num);
 
-    memset(sector, 0, SECTOR_SIZE_RAW);
-    /* Sync pattern: 00 FF FF FF FF FF FF FF FF FF FF 00 */
-    memset(sector + 1, SYNC_BYTE_MIDDLE, 10);
-    /* MSF address computed from output position */
-    sector_to_msf(sector_num, sector + OFFSET_HEADER);
-    /* Mode byte */
-    sector[OFFSET_MODE] = 0x02;
-
-    if (fread(sector + 0x014, 1, MODE2_FORM1_DATA_SIZE, in) != MODE2_FORM1_DATA_SIZE) {
+    if (fread(sector + OFFSET_MODE2_SUBHEADER + MODE2_SUBHEADER_SIZE, 1, MODE2_FORM1_DATA_SIZE,
+              in) != MODE2_FORM1_DATA_SIZE) {
         return -1;
     }
-    /* Copy subheader */
-    sector[0x10] = sector[0x14];
-    sector[0x11] = sector[0x15];
-    sector[0x12] = sector[0x16];
-    sector[0x13] = sector[0x17];
+    sector_copy_subheader(sector);
     eccedc_generate(sector, SECTOR_TYPE_MODE2_FORM1);
-    /* EDC computed over 2336 bytes (Mode 2 format) for backward compatibility */
     *checkedc = edc_compute(*checkedc, sector + OFFSET_MODE2_SUBHEADER, SECTOR_SIZE_MODE2);
-    /* Output full 2352-byte raw sector with sync/header */
     if (fwrite(sector, SECTOR_SIZE_RAW, 1, out) != 1) {
         fprintf(stderr, "Error: failed to write output\n");
         return -2;
@@ -200,29 +207,16 @@ static int decode_mode2_form1_sector(FILE *in, FILE *out, uint8_t *sector, uint3
  */
 static int decode_mode2_form2_sector(FILE *in, FILE *out, uint8_t *sector, uint32_t *checkedc,
                                      output_tracker_t *tracker) {
-    /* Get current sector number from output position BEFORE writing */
     uint32_t sector_num = get_current_sector(tracker);
+    init_mode2_sector(sector, sector_num);
 
-    memset(sector, 0, SECTOR_SIZE_RAW);
-    /* Sync pattern: 00 FF FF FF FF FF FF FF FF FF FF 00 */
-    memset(sector + 1, SYNC_BYTE_MIDDLE, 10);
-    /* MSF address computed from output position */
-    sector_to_msf(sector_num, sector + OFFSET_HEADER);
-    /* Mode byte */
-    sector[OFFSET_MODE] = 0x02;
-
-    if (fread(sector + 0x014, 1, MODE2_FORM2_DATA_SIZE, in) != MODE2_FORM2_DATA_SIZE) {
+    if (fread(sector + OFFSET_MODE2_SUBHEADER + MODE2_SUBHEADER_SIZE, 1, MODE2_FORM2_DATA_SIZE,
+              in) != MODE2_FORM2_DATA_SIZE) {
         return -1;
     }
-    /* Copy subheader */
-    sector[0x10] = sector[0x14];
-    sector[0x11] = sector[0x15];
-    sector[0x12] = sector[0x16];
-    sector[0x13] = sector[0x17];
+    sector_copy_subheader(sector);
     eccedc_generate(sector, SECTOR_TYPE_MODE2_FORM2);
-    /* EDC computed over 2336 bytes (Mode 2 format) for backward compatibility */
     *checkedc = edc_compute(*checkedc, sector + OFFSET_MODE2_SUBHEADER, SECTOR_SIZE_MODE2);
-    /* Output full 2352-byte raw sector with sync/header */
     if (fwrite(sector, SECTOR_SIZE_RAW, 1, out) != 1) {
         fprintf(stderr, "Error: failed to write output\n");
         return -2;
@@ -234,7 +228,8 @@ static int decode_mode2_form2_sector(FILE *in, FILE *out, uint8_t *sector, uint3
 /*
  * Main decoding function
  */
-static int unecmify(FILE *in, FILE *out, decode_stats_t *stats, bool is_stdin) {
+static int unecmify(FILE *in, FILE *out, decode_stats_t *stats, bool is_stdin, bool verbose) {
+    static const char *type_names[] = {"literal", "mode1", "mode2f1", "mode2f2"};
     uint32_t checkedc = 0;
     uint8_t sector[SECTOR_SIZE_RAW];
     progress_t progress;
@@ -276,6 +271,8 @@ static int unecmify(FILE *in, FILE *out, decode_stats_t *stats, bool is_stdin) {
         if (num >= 0x80000000)
             goto corrupt;
 
+        ECM_VERBOSE(verbose, "Record: type=%s, count=%u", type_names[type], num);
+
         if (type == SECTOR_TYPE_LITERAL) {
             while (num) {
                 unsigned b = (num > SECTOR_SIZE_RAW) ? SECTOR_SIZE_RAW : num;
@@ -302,9 +299,7 @@ static int unecmify(FILE *in, FILE *out, decode_stats_t *stats, bool is_stdin) {
                 case SECTOR_TYPE_MODE1:
                     if (stats)
                         stats->saw_mode1 = true;
-                    ret = decode_mode1_sector(in, out, sector, &checkedc);
-                    if (ret == 0)
-                        tracker.bytes_written += SECTOR_SIZE_RAW;
+                    ret = decode_mode1_sector(in, out, sector, &checkedc, &tracker);
                     break;
                 case SECTOR_TYPE_MODE2_FORM1:
                     if (stats)
@@ -424,6 +419,7 @@ int main(int argc, char **argv) {
     char *outfilename = nullptr;
     bool outfilename_allocated = false;
     bool createcue = false;
+    bool verbose = false;
     int result = 0;
     int argoffset = 0;
     decode_stats_t stats = {false, false};
@@ -431,20 +427,26 @@ int main(int argc, char **argv) {
     banner();
     eccedc_init();
 
-    if (argc < 2 || argc > 4) {
-        fprintf(stderr, "usage: %s [--cue] ecmfile [outputfile]\n", argv[0]);
+    if (argc < 2 || argc > 5) {
+        fprintf(stderr, "usage: %s [-v|--verbose] [--cue] ecmfile [outputfile]\n", argv[0]);
         fprintf(stderr, "       use '-' for stdin/stdout\n");
         return 1;
     }
 
-    /* Check for --cue option */
-    if (argc >= 2 && strcasecmp(argv[1], "--cue") == 0) {
-        createcue = true;
+    /* Check for -v/--verbose option */
+    if (argc >= 2 && (strcmp(argv[1], "-v") == 0 || strcmp(argv[1], "--verbose") == 0)) {
+        verbose = true;
         argoffset = 1;
     }
 
+    /* Check for --cue option */
+    if (argc >= 2 + argoffset && strcasecmp(argv[1 + argoffset], "--cue") == 0) {
+        createcue = true;
+        argoffset++;
+    }
+
     if (argc < 2 + argoffset) {
-        fprintf(stderr, "usage: %s [--cue] ecmfile [outputfile]\n", argv[0]);
+        fprintf(stderr, "usage: %s [-v|--verbose] [--cue] ecmfile [outputfile]\n", argv[0]);
         return 1;
     }
 
@@ -506,7 +508,7 @@ int main(int argc, char **argv) {
         }
     }
 
-    result = unecmify(fin, fout, &stats, is_stdio(infilename));
+    result = unecmify(fin, fout, &stats, is_stdio(infilename), verbose);
 
     /* Close output file before creating CUE */
     if (fout && !is_stdio(outfilename)) {
