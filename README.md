@@ -113,7 +113,8 @@ See [FORMAT.md](doc/FORMAT.md) for detailed ECM file format specification.
 
 This project is licensed under the **GNU General Public License v2.0** - see the [LICENSE](LICENSE) file for details.
 
-## Credits
+## Authors
 
-- **Original Author:** Neill Corlett (2002)
-- **Contributors:** See [GitHub contributors](../../graphs/contributors)
+Aleksandr Pavlov ckidoz@gmail.com
+
+See [AUTHORS.md](AUTHORS.md) for full attribution.
