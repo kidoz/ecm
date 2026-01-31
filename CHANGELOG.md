@@ -5,6 +5,41 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] - 2025-01-31
+
+### Added
+
+- **Verbose mode** - New `-v`/`--verbose` flag for both `ecm` and `unecm`
+  - `ecm -v` shows mode selection and batch flush events
+  - `unecm -v` shows record type/count decoding
+- **Debug logging** - Compile-time `ECM_DEBUG` macro for development builds
+  - `ECM_DEBUG_LOG()` macro outputs to stderr with `[DEBUG]` prefix
+  - `ECM_VERBOSE()` macro for runtime-controlled verbose output
+- **Performance benchmarks** - New benchmark suite (`just benchmark`)
+  - EDC computation throughput (~370 MB/s)
+  - ECC generation speed (~220K sectors/sec)
+  - Sector type detection (~104K sectors/sec)
+  - Full encode/decode throughput (~120 MB/s)
+- **Processing modes documentation** - README section explaining batch vs streaming trade-offs
+
+### Changed
+
+- **README overhaul** - Comprehensive documentation update
+  - Added "Processing Modes" section
+  - Added "Performance" section with benchmark results
+  - Added "Contributing" guidelines
+  - Added "See Also" section with related projects
+  - Improved usage examples and option tables
+- **Code comments** - Added detailed comments explaining:
+  - Why `check_type_raw()` parameter cannot be `const` (calls `ecc_verify` with buffer modification)
+  - Trade-offs between batch and streaming encoding modes
+
+### Development
+
+- New `tests/benchmark.c` performance measurement suite
+- New `just benchmark` command
+- Updated `tests/meson.build` to register benchmark executable
+
 ## [1.2.0] - 2025-12-12
 
 ### Fixed
@@ -80,6 +115,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Support for Mode 1 and Mode 2 (Form 1/Form 2) sectors
 - CUE file generation option
 
+[1.3.0]: https://github.com/kidoz/ecm/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/kidoz/ecm/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/kidoz/ecm/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/kidoz/ecm/releases/tag/v1.0.0
