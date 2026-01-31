@@ -1,6 +1,6 @@
 # Maintainer: Your Name <your.email@example.com>
 pkgname=ecm
-pkgver=1.2.0
+pkgver=1.3.0
 pkgrel=1
 pkgdesc="Error Code Modeler - encoder/decoder for CD image ECC/EDC data"
 arch=('x86_64')
@@ -9,7 +9,7 @@ license=('GPL-2.0-or-later')
 depends=('glibc')
 makedepends=('meson' 'ninja')
 source=("${pkgname}-${pkgver}.tar.gz::${url}/archive/v${pkgver}.tar.gz")
-sha256sums=('c73566046dfa8fec16de04747655391917ad1c7e86a9928ef1e7d38fd95b8663')
+sha256sums=('daa079c43d0895dba2cf6c4b0ee309bba909745e4bd194121da3c80410aab5ac')
 
 build() {
     cd "${pkgname}-${pkgver}"
