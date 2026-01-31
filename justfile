@@ -66,3 +66,16 @@ fmt:
 # Check formatting without modifying
 fmt-check:
     clang-format --dry-run --Werror src/*.c include/*.h tests/*.c
+
+# Run clang static analyzer
+analyze: clean
+    scan-build meson setup {{build_dir}}
+    scan-build meson compile -C {{build_dir}}
+
+# Run valgrind memory check on ecm
+valgrind-ecm *args:
+    valgrind --leak-check=full --show-leak-kinds=all --track-origins=yes {{build_dir}}/ecm {{args}}
+
+# Run valgrind memory check on unecm
+valgrind-unecm *args:
+    valgrind --leak-check=full --show-leak-kinds=all --track-origins=yes {{build_dir}}/unecm {{args}}
