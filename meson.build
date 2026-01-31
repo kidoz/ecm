@@ -1,7 +1,7 @@
 project(
   'ecm',
   'c',
-  version: '1.2.0',
+  version: '1.3.0',
   license: 'GPL-2.0-or-later',
   default_options: [
     'c_std=c23',
