@@ -18,6 +18,10 @@ version_h = configure_file(
   configuration: {'VERSION': meson.project_version()},
 )
 
+if host_machine.system() == 'windows'
+  add_project_arguments('-D_CRT_SECURE_NO_WARNINGS', language: 'c')
+endif
+
 inc = include_directories('include')
 inc_build = include_directories('.')
 

@@ -43,8 +43,38 @@
 #undef is_stdio
 
 /*
- * Timing utilities using CLOCK_MONOTONIC
+ * Timing utilities
  */
+#ifdef _WIN32
+#include <windows.h>
+
+typedef struct {
+    LARGE_INTEGER start;
+    LARGE_INTEGER end;
+} bench_timer_t;
+
+static void timer_start(bench_timer_t *t) {
+    QueryPerformanceCounter(&t->start);
+}
+
+static void timer_stop(bench_timer_t *t) {
+    QueryPerformanceCounter(&t->end);
+}
+
+static double timer_elapsed_ms(const bench_timer_t *t) {
+    LARGE_INTEGER freq;
+    QueryPerformanceFrequency(&freq);
+    return (double)(t->end.QuadPart - t->start.QuadPart) * 1000.0 / freq.QuadPart;
+}
+
+static double timer_elapsed_us(const bench_timer_t *t) {
+    LARGE_INTEGER freq;
+    QueryPerformanceFrequency(&freq);
+    return (double)(t->end.QuadPart - t->start.QuadPart) * 1000000.0 / freq.QuadPart;
+}
+
+#else /* POSIX */
+
 typedef struct {
     struct timespec start;
     struct timespec end;
@@ -69,6 +99,8 @@ static double timer_elapsed_us(const bench_timer_t *t) {
     double end_us = t->end.tv_sec * 1000000.0 + t->end.tv_nsec / 1000.0;
     return end_us - start_us;
 }
+
+#endif
 
 /*
  * Test data: Valid Mode 1 sector
