@@ -13,6 +13,7 @@
 #if defined(_WIN32) || defined(_WIN64)
 #define fseeko _fseeki64
 #define ftello _ftelli64
+#define off_t long long
 #endif
 
 #include "eccedc.h"
@@ -268,8 +269,6 @@ static int unecmify(FILE *in, FILE *out, decode_stats_t *stats, bool is_stdin, b
         if (num == 0xFFFFFFFF)
             break;
         num++;
-        if (num >= 0x80000000)
-            goto corrupt;
 
         ECM_VERBOSE(verbose, "Record: type=%s, count=%u", type_names[type], num);
 

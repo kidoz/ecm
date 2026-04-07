@@ -13,6 +13,7 @@
 #if defined(_WIN32) || defined(_WIN64)
 #define fseeko _fseeki64
 #define ftello _ftelli64
+#define off_t long long
 #endif
 
 #include "eccedc.h"
@@ -443,7 +444,7 @@ static int ecmify(FILE *in, FILE *out, bool verbose) {
     uint8_t *inputqueue = nullptr;
     uint32_t inedc = 0;
     sector_type_t curtype = SECTOR_TYPE_LITERAL;
-    int curtypecount = 0;
+    int64_t curtypecount = 0;
     int64_t curtype_in_start = 0;
     int64_t incheckpos = 0;
     int64_t inbufferpos = 0;
@@ -531,8 +532,8 @@ static int ecmify(FILE *in, FILE *out, bool verbose) {
         /* Flush previous run if type changed */
         if (!first_run && detecttype != curtype) {
             if (curtypecount) {
-                ECM_VERBOSE(verbose, "Flushing batch: type=%s, count=%d", type_names[curtype],
-                            curtypecount);
+                ECM_VERBOSE(verbose, "Flushing batch: type=%s, count=%lld", type_names[curtype],
+                            (long long)curtypecount);
                 if (fseeko(in, (off_t)curtype_in_start, SEEK_SET) != 0) {
                     fprintf(stderr, "Error: failed to seek input file\n");
                     result = 1;
@@ -563,7 +564,7 @@ static int ecmify(FILE *in, FILE *out, bool verbose) {
             if (step == 0) {
                 step = 1; /* Safety to avoid infinite loop */
             }
-            curtypecount += (int)step;
+            curtypecount += (int64_t)step;
         } else {
             step = SECTOR_SIZE_RAW;
             curtypecount++;
@@ -573,12 +574,30 @@ static int ecmify(FILE *in, FILE *out, bool verbose) {
         incheckpos += (int64_t)step;
         inqueuestart += step;
         dataavail -= step;
+
+        /* Force flush if run length approaches the 32-bit encoding limit */
+        if (curtypecount >= (int64_t)(UINT32_MAX - SECTOR_SIZE_RAW)) {
+            ECM_VERBOSE(verbose, "Splitting batch: type=%s, count=%lld", type_names[curtype],
+                        (long long)curtypecount);
+            if (fseeko(in, (off_t)curtype_in_start, SEEK_SET) != 0) {
+                fprintf(stderr, "Error: failed to seek input file\n");
+                result = 1;
+                goto cleanup;
+            }
+            typetally[curtype] += (unsigned)curtypecount;
+            if (flush_sector_run(&inedc, curtype, (unsigned)curtypecount, in, out, &progress) < 0) {
+                result = 1;
+                goto cleanup;
+            }
+            curtype_in_start = incheckpos;
+            curtypecount = 0;
+        }
     }
 
     /* Flush final run */
     if (curtypecount) {
-        ECM_VERBOSE(verbose, "Flushing final batch: type=%s, count=%d", type_names[curtype],
-                    curtypecount);
+        ECM_VERBOSE(verbose, "Flushing final batch: type=%s, count=%lld", type_names[curtype],
+                    (long long)curtypecount);
         if (fseeko(in, (off_t)curtype_in_start, SEEK_SET) != 0) {
             fprintf(stderr, "Error: failed to seek input file\n");
             result = 1;
