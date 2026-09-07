@@ -13,7 +13,7 @@
 #if defined(_WIN32) || defined(_WIN64)
 #define fseeko _fseeki64
 #define ftello _ftelli64
-#define off_t long long
+#define off_t  long long
 #endif
 
 #include "eccedc.h"
@@ -53,50 +53,6 @@ typedef struct {
     bool saw_mode1;
     bool saw_mode2;
 } decode_stats_t;
-
-/*
- * Output position tracker for MSF address computation.
- * Tracks bytes written explicitly to support non-seekable outputs (stdout/pipes).
- * Literal bytes also contribute to the sector position.
- */
-typedef struct {
-    int64_t bytes_written;
-} output_tracker_t;
-
-/* Convert binary value to packed BCD (00-99) */
-static uint8_t to_bcd(uint8_t value) {
-    return (uint8_t)(((value / 10) << 4) | (value % 10));
-}
-
-/*
- * Convert sector number to MSF (Minutes:Seconds:Frames) address.
- * CD standard: 75 frames/second, 60 seconds/minute.
- * First data sector is at MSF 00:02:00 (150 frames offset).
- */
-static void sector_to_msf(uint32_t sector, uint8_t *msf) {
-    uint32_t frame = sector + 150; /* 2-second pregap offset */
-    msf[2] = to_bcd((uint8_t)(frame % 75));
-    frame /= 75;
-    msf[1] = to_bcd((uint8_t)(frame % 60));
-    msf[0] = to_bcd((uint8_t)(frame / 60));
-}
-
-/*
- * Get current sector number from tracked output position.
- */
-static uint32_t get_current_sector(const output_tracker_t *tracker) {
-    return (uint32_t)(tracker->bytes_written / SECTOR_SIZE_RAW);
-}
-
-/*
- * Initialize a Mode 2 sector with sync pattern, MSF address, and mode byte.
- */
-static void init_mode2_sector(uint8_t *sector, uint32_t sector_num) {
-    memset(sector, 0, SECTOR_SIZE_RAW);
-    sector_init_sync(sector);
-    sector_to_msf(sector_num, sector + OFFSET_HEADER);
-    sector[OFFSET_MODE] = 0x02;
-}
 
 /*
  * Read and verify magic header
@@ -156,10 +112,9 @@ static bool read_type_count(FILE *in, unsigned *type, unsigned *num) {
 }
 
 /*
- * Decode a Mode 1 sector
+ * Decode a Mode 1 sector into a full 2352-byte raw sector.
  */
-static int decode_mode1_sector(FILE *in, FILE *out, uint8_t *sector, uint32_t *checkedc,
-                               output_tracker_t *tracker) {
+static int decode_mode1_sector(FILE *in, FILE *out, uint8_t *sector, uint32_t *checkedc) {
     memset(sector, 0, SECTOR_SIZE_RAW);
     sector_init_sync(sector);
     sector[OFFSET_MODE] = 0x01;
@@ -176,53 +131,34 @@ static int decode_mode1_sector(FILE *in, FILE *out, uint8_t *sector, uint32_t *c
         fprintf(stderr, "Error: failed to write output\n");
         return -2;
     }
-    tracker->bytes_written += SECTOR_SIZE_RAW;
     return 0;
 }
 
 /*
- * Decode a Mode 2 Form 1 sector
+ * Decode a Mode 2 Form 1 or Form 2 record into the 2336-byte body that follows sync +
+ * header in a raw sector.
+ *
+ * The record carries no sync, address, or mode: the encoder stores those 16 bytes as a
+ * literal run in front of the record, so emitting them here would duplicate them and
+ * corrupt spec-conformant streams. The address is zeroed for Mode 2 ECC anyway, so the
+ * header area of the scratch buffer only needs to be deterministic, not meaningful.
  */
-static int decode_mode2_form1_sector(FILE *in, FILE *out, uint8_t *sector, uint32_t *checkedc,
-                                     output_tracker_t *tracker) {
-    uint32_t sector_num = get_current_sector(tracker);
-    init_mode2_sector(sector, sector_num);
+static int decode_mode2_sector(FILE *in, FILE *out, uint8_t *sector, uint32_t *checkedc,
+                               sector_type_t type) {
+    size_t payload =
+        type == SECTOR_TYPE_MODE2_FORM1 ? MODE2_FORM1_DATA_SIZE : MODE2_FORM2_DATA_SIZE;
 
-    if (fread(sector + OFFSET_MODE2_SUBHEADER + MODE2_SUBHEADER_SIZE, 1, MODE2_FORM1_DATA_SIZE,
-              in) != MODE2_FORM1_DATA_SIZE) {
+    memset(sector, 0, SECTOR_SIZE_RAW);
+    if (fread(sector + OFFSET_MODE2_SUBHEADER + MODE2_SUBHEADER_SIZE, 1, payload, in) != payload) {
         return -1;
     }
     sector_copy_subheader(sector);
-    eccedc_generate(sector, SECTOR_TYPE_MODE2_FORM1);
+    eccedc_generate(sector, type);
     *checkedc = edc_compute(*checkedc, sector + OFFSET_MODE2_SUBHEADER, SECTOR_SIZE_MODE2);
-    if (fwrite(sector, SECTOR_SIZE_RAW, 1, out) != 1) {
+    if (fwrite(sector + OFFSET_MODE2_SUBHEADER, SECTOR_SIZE_MODE2, 1, out) != 1) {
         fprintf(stderr, "Error: failed to write output\n");
         return -2;
     }
-    tracker->bytes_written += SECTOR_SIZE_RAW;
-    return 0;
-}
-
-/*
- * Decode a Mode 2 Form 2 sector
- */
-static int decode_mode2_form2_sector(FILE *in, FILE *out, uint8_t *sector, uint32_t *checkedc,
-                                     output_tracker_t *tracker) {
-    uint32_t sector_num = get_current_sector(tracker);
-    init_mode2_sector(sector, sector_num);
-
-    if (fread(sector + OFFSET_MODE2_SUBHEADER + MODE2_SUBHEADER_SIZE, 1, MODE2_FORM2_DATA_SIZE,
-              in) != MODE2_FORM2_DATA_SIZE) {
-        return -1;
-    }
-    sector_copy_subheader(sector);
-    eccedc_generate(sector, SECTOR_TYPE_MODE2_FORM2);
-    *checkedc = edc_compute(*checkedc, sector + OFFSET_MODE2_SUBHEADER, SECTOR_SIZE_MODE2);
-    if (fwrite(sector, SECTOR_SIZE_RAW, 1, out) != 1) {
-        fprintf(stderr, "Error: failed to write output\n");
-        return -2;
-    }
-    tracker->bytes_written += SECTOR_SIZE_RAW;
     return 0;
 }
 
@@ -234,7 +170,6 @@ static int unecmify(FILE *in, FILE *out, decode_stats_t *stats, bool is_stdin, b
     uint32_t checkedc = 0;
     uint8_t sector[SECTOR_SIZE_RAW];
     progress_t progress;
-    output_tracker_t tracker = {0};
 
     /* For regular files, get size for progress tracking; for stdin, skip */
     if (!is_stdin) {
@@ -283,7 +218,6 @@ static int unecmify(FILE *in, FILE *out, decode_stats_t *stats, bool is_stdin, b
                     fprintf(stderr, "Error: failed to write output\n");
                     goto writeerr;
                 }
-                tracker.bytes_written += b;
                 num -= b;
                 off_t pos = ftello(in);
                 if (pos >= 0)
@@ -298,17 +232,13 @@ static int unecmify(FILE *in, FILE *out, decode_stats_t *stats, bool is_stdin, b
                 case SECTOR_TYPE_MODE1:
                     if (stats)
                         stats->saw_mode1 = true;
-                    ret = decode_mode1_sector(in, out, sector, &checkedc, &tracker);
+                    ret = decode_mode1_sector(in, out, sector, &checkedc);
                     break;
                 case SECTOR_TYPE_MODE2_FORM1:
-                    if (stats)
-                        stats->saw_mode2 = true;
-                    ret = decode_mode2_form1_sector(in, out, sector, &checkedc, &tracker);
-                    break;
                 case SECTOR_TYPE_MODE2_FORM2:
                     if (stats)
                         stats->saw_mode2 = true;
-                    ret = decode_mode2_form2_sector(in, out, sector, &checkedc, &tracker);
+                    ret = decode_mode2_sector(in, out, sector, &checkedc, (sector_type_t)type);
                     break;
                 default:
                     fprintf(stderr, "Error: invalid sector type %u\n", type);

@@ -13,7 +13,7 @@
 #if defined(_WIN32) || defined(_WIN64)
 #define fseeko _fseeki64
 #define ftello _ftelli64
-#define off_t long long
+#define off_t  long long
 #endif
 
 #include "eccedc.h"
@@ -24,6 +24,8 @@ enum {
     INPUT_QUEUE_PADDING = 0x10,
     INPUT_QUEUE_SIZE = 1048576 + INPUT_QUEUE_PADDING
 };
+
+static const char *sector_type_names[] = {"literal", "mode1", "mode2f1", "mode2f2"};
 
 static void banner(void) {
     fprintf(stderr, "ECM - Encoder for Error Code Modeler format v" ECM_VERSION "\n\n");
@@ -178,55 +180,83 @@ static void progress_update(progress_t *p, int64_t analyze, int64_t encode) {
 }
 
 /*
- * Write sector data for a specific type.
- * All sectors are raw 2352-byte format.
+ * Raw input bytes covered by one sector record.
+ *
+ * A Mode 1 record spans the whole 2352-byte raw sector because its address is stored in
+ * the record. A Mode 2 record spans only the 2336-byte body that starts at the subheader:
+ * the ECM format stores no sync, address, or mode for Mode 2, so the encoder carries those
+ * 16 bytes as a literal run in front of the record (see queue_raw_sector()).
+ */
+static size_t record_input_size(sector_type_t type) {
+    return type == SECTOR_TYPE_MODE1 ? SECTOR_SIZE_RAW : SECTOR_SIZE_MODE2;
+}
+
+/*
+ * Write the stored payload of one sector record and fold the covered input into the EDC.
+ * buf holds record_input_size(type) bytes: the raw sector for Mode 1, or the Mode 2 body
+ * starting at the subheader for Form 1/2.
+ */
+static int write_sector_payload(const uint8_t *buf, FILE *out, uint32_t *edc, sector_type_t type) {
+    switch (type) {
+        case SECTOR_TYPE_MODE1:
+            *edc = edc_compute(*edc, buf, SECTOR_SIZE_RAW);
+            /* Address + user data; sync, mode, EDC, reserved, and ECC are regenerated */
+            if (fwrite(buf + OFFSET_HEADER, 1, MODE1_ADDRESS_SIZE, out) != MODE1_ADDRESS_SIZE ||
+                fwrite(buf + OFFSET_MODE1_DATA, 1, SECTOR_USER_DATA, out) != SECTOR_USER_DATA) {
+                return -1;
+            }
+            return 0;
+
+        case SECTOR_TYPE_MODE2_FORM1:
+            *edc = edc_compute(*edc, buf, SECTOR_SIZE_MODE2);
+            /* Second subheader copy + user data; first copy, EDC, and ECC are regenerated */
+            if (fwrite(buf + MODE2_SUBHEADER_SIZE, 1, MODE2_FORM1_DATA_SIZE, out) !=
+                MODE2_FORM1_DATA_SIZE) {
+                return -1;
+            }
+            return 0;
+
+        case SECTOR_TYPE_MODE2_FORM2:
+            *edc = edc_compute(*edc, buf, SECTOR_SIZE_MODE2);
+            /* Second subheader copy + user data; first copy and EDC are regenerated */
+            if (fwrite(buf + MODE2_SUBHEADER_SIZE, 1, MODE2_FORM2_DATA_SIZE, out) !=
+                MODE2_FORM2_DATA_SIZE) {
+                return -1;
+            }
+            return 0;
+
+        default:
+            return -1;
+    }
+}
+
+/*
+ * Write a literal record: type/count header followed by the bytes themselves.
+ */
+static int write_literal_record(const uint8_t *buf, size_t len, FILE *out, uint32_t *edc) {
+    if (write_type_count(out, SECTOR_TYPE_LITERAL, (unsigned)len) < 0 ||
+        fwrite(buf, 1, len, out) != len) {
+        return -1;
+    }
+    *edc = edc_compute(*edc, buf, len);
+    return 0;
+}
+
+/*
+ * Read one sector record's worth of input and write its payload (batch encode pass).
  */
 static int write_sector_data(FILE *in, FILE *out, uint32_t *edc, sector_type_t type,
                              progress_t *progress) {
     uint8_t buf[SECTOR_SIZE_RAW];
+    size_t size = record_input_size(type);
 
-    /* Always read full 2352-byte raw sector */
-    if (fread(buf, 1, SECTOR_SIZE_RAW, in) != SECTOR_SIZE_RAW) {
+    if (fread(buf, 1, size, in) != size) {
         fprintf(stderr, "Error: unexpected end of input file\n");
         return -1;
     }
-
-    switch (type) {
-        case SECTOR_TYPE_MODE1:
-            /* EDC over full 2352 bytes */
-            *edc = edc_compute(*edc, buf, SECTOR_SIZE_RAW);
-            /* Write address (3 bytes) + user data (2048 bytes) */
-            if (fwrite(buf + OFFSET_HEADER, 1, MODE1_ADDRESS_SIZE, out) != MODE1_ADDRESS_SIZE ||
-                fwrite(buf + OFFSET_MODE1_DATA, 1, SECTOR_USER_DATA, out) != SECTOR_USER_DATA) {
-                fprintf(stderr, "Error: failed to write output\n");
-                return -1;
-            }
-            break;
-
-        case SECTOR_TYPE_MODE2_FORM1:
-            /* EDC over 2336 bytes (Mode 2 format, offset 0x10-0x92F) for compatibility */
-            *edc = edc_compute(*edc, buf + OFFSET_MODE2_SUBHEADER, SECTOR_SIZE_MODE2);
-            /* Write duplicated subheader (4 bytes) + user data (2048 bytes) */
-            if (fwrite(buf + OFFSET_MODE2_SUBHEADER + MODE2_SUBHEADER_SIZE, 1,
-                       MODE2_FORM1_DATA_SIZE, out) != MODE2_FORM1_DATA_SIZE) {
-                fprintf(stderr, "Error: failed to write output\n");
-                return -1;
-            }
-            break;
-
-        case SECTOR_TYPE_MODE2_FORM2:
-            /* EDC over 2336 bytes (Mode 2 format, offset 0x10-0x92F) for compatibility */
-            *edc = edc_compute(*edc, buf + OFFSET_MODE2_SUBHEADER, SECTOR_SIZE_MODE2);
-            /* Write duplicated subheader (4 bytes) + user data (2324 bytes) */
-            if (fwrite(buf + OFFSET_MODE2_SUBHEADER + MODE2_SUBHEADER_SIZE, 1,
-                       MODE2_FORM2_DATA_SIZE, out) != MODE2_FORM2_DATA_SIZE) {
-                fprintf(stderr, "Error: failed to write output\n");
-                return -1;
-            }
-            break;
-
-        default:
-            return -1;
+    if (write_sector_payload(buf, out, edc, type) < 0) {
+        fprintf(stderr, "Error: failed to write output\n");
+        return -1;
     }
 
     off_t pos = ftello(in);
@@ -316,42 +346,6 @@ static void print_report(const unsigned typetally[4], int64_t total_in, FILE *ou
 }
 
 /*
- * Encode sector data from a buffer.
- */
-static int encode_sector_from_buffer(const uint8_t *buf, FILE *out, uint32_t *edc,
-                                     sector_type_t type) {
-    switch (type) {
-        case SECTOR_TYPE_MODE1:
-            *edc = edc_compute(*edc, buf, SECTOR_SIZE_RAW);
-            if (fwrite(buf + OFFSET_HEADER, 1, MODE1_ADDRESS_SIZE, out) != MODE1_ADDRESS_SIZE ||
-                fwrite(buf + OFFSET_MODE1_DATA, 1, SECTOR_USER_DATA, out) != SECTOR_USER_DATA) {
-                return -1;
-            }
-            break;
-
-        case SECTOR_TYPE_MODE2_FORM1:
-            *edc = edc_compute(*edc, buf + OFFSET_MODE2_SUBHEADER, SECTOR_SIZE_MODE2);
-            if (fwrite(buf + OFFSET_MODE2_SUBHEADER + MODE2_SUBHEADER_SIZE, 1,
-                       MODE2_FORM1_DATA_SIZE, out) != MODE2_FORM1_DATA_SIZE) {
-                return -1;
-            }
-            break;
-
-        case SECTOR_TYPE_MODE2_FORM2:
-            *edc = edc_compute(*edc, buf + OFFSET_MODE2_SUBHEADER, SECTOR_SIZE_MODE2);
-            if (fwrite(buf + OFFSET_MODE2_SUBHEADER + MODE2_SUBHEADER_SIZE, 1,
-                       MODE2_FORM2_DATA_SIZE, out) != MODE2_FORM2_DATA_SIZE) {
-                return -1;
-            }
-            break;
-
-        default:
-            return -1;
-    }
-    return 0;
-}
-
-/*
  * Streaming mode encoder - processes input without seeking.
  * Works with stdin/pipes.
  *
@@ -362,8 +356,7 @@ static int encode_sector_from_buffer(const uint8_t *buf, FILE *out, uint32_t *ed
  * - Works with non-seekable streams (stdin, pipes)
  */
 static int ecmify_streaming(FILE *in, FILE *out, bool verbose) {
-    static const char *type_names[] = {"literal", "mode1", "mode2f1", "mode2f2"};
-    uint8_t buf[SECTOR_SIZE_RAW + INPUT_QUEUE_PADDING];
+    uint8_t buf[SECTOR_SIZE_RAW];
     uint32_t inedc = 0;
     unsigned typetally[4] = {0};
     int64_t total_in = 0;
@@ -376,44 +369,40 @@ static int ecmify_streaming(FILE *in, FILE *out, bool verbose) {
     }
 
     for (;;) {
-        size_t dataavail = fread(buf + INPUT_QUEUE_PADDING, 1, SECTOR_SIZE_RAW, in);
+        size_t dataavail = fread(buf, 1, SECTOR_SIZE_RAW, in);
         if (dataavail == 0) {
             break;
         }
         total_in += (int64_t)dataavail;
 
-        sector_type_t detecttype;
-        if (dataavail < SECTOR_SIZE_RAW) {
-            detecttype = SECTOR_TYPE_LITERAL;
-        } else {
-            detecttype = check_type_raw(buf + INPUT_QUEUE_PADDING);
-        }
+        sector_type_t type =
+            dataavail < SECTOR_SIZE_RAW ? SECTOR_TYPE_LITERAL : check_type_raw(buf);
 
-        ECM_VERBOSE(verbose, "Sector %u: type=%s, size=%zu", sector_num++, type_names[detecttype],
+        ECM_VERBOSE(verbose, "Sector %u: type=%s, size=%zu", sector_num++, sector_type_names[type],
                     dataavail);
 
-        if (detecttype == SECTOR_TYPE_LITERAL) {
-            if (write_type_count(out, SECTOR_TYPE_LITERAL, (unsigned)dataavail) < 0) {
-                fprintf(stderr, "Error: failed to write output\n");
-                return 1;
-            }
-            inedc = edc_compute(inedc, buf + INPUT_QUEUE_PADDING, dataavail);
-            if (fwrite(buf + INPUT_QUEUE_PADDING, 1, dataavail, out) != dataavail) {
-                fprintf(stderr, "Error: failed to write output\n");
-                return 1;
+        if (type == SECTOR_TYPE_LITERAL) {
+            if (write_literal_record(buf, dataavail, out, &inedc) < 0) {
+                goto writeerr;
             }
             typetally[SECTOR_TYPE_LITERAL] += (unsigned)dataavail;
-        } else {
-            typetally[detecttype]++;
-            if (write_type_count(out, detecttype, 1) < 0) {
-                fprintf(stderr, "Error: failed to write output\n");
-                return 1;
-            }
-            if (encode_sector_from_buffer(buf + INPUT_QUEUE_PADDING, out, &inedc, detecttype) < 0) {
-                fprintf(stderr, "Error: failed to write output\n");
-                return 1;
-            }
+            continue;
         }
+
+        const uint8_t *record = buf;
+        if (type != SECTOR_TYPE_MODE1) {
+            /* Sync + header travel as literal bytes; see queue_raw_sector() */
+            if (write_literal_record(buf, SECTOR_SYNC_HEADER_SIZE, out, &inedc) < 0) {
+                goto writeerr;
+            }
+            typetally[SECTOR_TYPE_LITERAL] += SECTOR_SYNC_HEADER_SIZE;
+            record = buf + SECTOR_SYNC_HEADER_SIZE;
+        }
+        if (write_type_count(out, type, 1) < 0 ||
+            write_sector_payload(record, out, &inedc, type) < 0) {
+            goto writeerr;
+        }
+        typetally[type]++;
     }
 
     if (write_type_count(out, 0, 0) < 0) {
@@ -427,6 +416,101 @@ static int ecmify_streaming(FILE *in, FILE *out, bool verbose) {
 
     print_report(typetally, total_in, out);
     return 0;
+
+writeerr:
+    fprintf(stderr, "Error: failed to write output\n");
+    return 1;
+}
+
+/*
+ * A pending run of same-type records in batch mode. Runs are described by input offset so
+ * the encode pass can seek back and re-read them; count is bytes for literal runs and
+ * sectors otherwise.
+ */
+typedef struct {
+    sector_type_t type;
+    int64_t start;
+    int64_t count;
+} run_t;
+
+typedef struct {
+    FILE *in;
+    FILE *out;
+    uint32_t edc;
+    unsigned typetally[4];
+    progress_t progress;
+    run_t run;
+    bool verbose;
+} batch_encoder_t;
+
+/*
+ * Encode the pending run, if any, by seeking back to where it started.
+ */
+static int run_flush(batch_encoder_t *enc, const char *why) {
+    run_t *run = &enc->run;
+
+    if (run->count == 0) {
+        return 0;
+    }
+
+    ECM_VERBOSE(enc->verbose, "%s: type=%s, count=%lld", why, sector_type_names[run->type],
+                (long long)run->count);
+    if (fseeko(enc->in, (off_t)run->start, SEEK_SET) != 0) {
+        fprintf(stderr, "Error: failed to seek input file\n");
+        return -1;
+    }
+    enc->typetally[run->type] += (unsigned)run->count;
+    if (flush_sector_run(&enc->edc, run->type, (unsigned)run->count, enc->in, enc->out,
+                         &enc->progress) < 0) {
+        return -1;
+    }
+    run->count = 0;
+    return 0;
+}
+
+/*
+ * Append count units of the given type found at input offset start, flushing the pending
+ * run when the type changes or its count nears the 32-bit type/count limit.
+ */
+static int run_add(batch_encoder_t *enc, sector_type_t type, int64_t start, int64_t count) {
+    run_t *run = &enc->run;
+
+    if (run->count != 0 && run->type != type && run_flush(enc, "Flushing batch") < 0) {
+        return -1;
+    }
+    if (run->count == 0) {
+        run->type = type;
+        run->start = start;
+    }
+    run->count += count;
+
+    if (run->count >= (int64_t)(UINT32_MAX - SECTOR_SIZE_RAW)) {
+        return run_flush(enc, "Splitting batch");
+    }
+    return 0;
+}
+
+/*
+ * Queue one raw 2352-byte sector found at input offset pos.
+ *
+ * Mode 2 sectors become a 16-byte literal run (sync, address, mode) followed by a type 2/3
+ * record for the body. That is the layout the upstream encoder produces, and it is what
+ * keeps the original address in the stream: the record itself has no field for it.
+ */
+static int queue_raw_sector(batch_encoder_t *enc, sector_type_t type, int64_t pos) {
+    switch (type) {
+        case SECTOR_TYPE_LITERAL:
+            return run_add(enc, SECTOR_TYPE_LITERAL, pos, SECTOR_SIZE_RAW);
+        case SECTOR_TYPE_MODE1:
+            return run_add(enc, SECTOR_TYPE_MODE1, pos, 1);
+        case SECTOR_TYPE_MODE2_FORM1:
+        case SECTOR_TYPE_MODE2_FORM2:
+            if (run_add(enc, SECTOR_TYPE_LITERAL, pos, SECTOR_SYNC_HEADER_SIZE) < 0) {
+                return -1;
+            }
+            return run_add(enc, type, pos + SECTOR_SYNC_HEADER_SIZE, 1);
+    }
+    return -1;
 }
 
 /*
@@ -440,21 +524,14 @@ static int ecmify_streaming(FILE *in, FILE *out, bool verbose) {
  * - Two-pass: analyze then encode
  */
 static int ecmify(FILE *in, FILE *out, bool verbose) {
-    static const char *type_names[] = {"literal", "mode1", "mode2f1", "mode2f2"};
     uint8_t *inputqueue = nullptr;
-    uint32_t inedc = 0;
-    sector_type_t curtype = SECTOR_TYPE_LITERAL;
-    int64_t curtypecount = 0;
-    int64_t curtype_in_start = 0;
+    batch_encoder_t enc = {.in = in, .out = out, .verbose = verbose};
     int64_t incheckpos = 0;
     int64_t inbufferpos = 0;
     int64_t intotallength;
     size_t inqueuestart = 0;
     size_t dataavail = 0;
-    unsigned typetally[4] = {0};
-    progress_t progress;
     int result = 0;
-    bool first_run = true;
 
     ECM_VERBOSE(verbose, "Using batch mode (seekable file)");
 
@@ -481,7 +558,7 @@ static int ecmify(FILE *in, FILE *out, bool verbose) {
         free(inputqueue);
         return 1;
     }
-    progress_reset(&progress, intotallength);
+    progress_reset(&enc.progress, intotallength);
 
     if (write_magic_header(out) < 0) {
         free(inputqueue);
@@ -501,7 +578,7 @@ static int ecmify(FILE *in, FILE *out, bool verbose) {
                 inqueuestart = 0;
             }
             if (willread) {
-                progress_update(&progress, inbufferpos, progress.encode);
+                progress_update(&enc.progress, inbufferpos, enc.progress.encode);
                 if (fseeko(in, (off_t)inbufferpos, SEEK_SET) != 0) {
                     fprintf(stderr, "Error: failed to seek input file\n");
                     result = 1;
@@ -521,93 +598,30 @@ static int ecmify(FILE *in, FILE *out, bool verbose) {
         if (dataavail == 0)
             break;
 
-        /* Detect sector type - all sectors require 2352 bytes (raw format) */
-        sector_type_t detecttype;
-        if (dataavail < SECTOR_SIZE_RAW) {
-            detecttype = SECTOR_TYPE_LITERAL;
-        } else {
-            detecttype = check_type_raw(inputqueue + INPUT_QUEUE_PADDING + inqueuestart);
-        }
-
-        /* Flush previous run if type changed */
-        if (!first_run && detecttype != curtype) {
-            if (curtypecount) {
-                ECM_VERBOSE(verbose, "Flushing batch: type=%s, count=%lld", type_names[curtype],
-                            (long long)curtypecount);
-                if (fseeko(in, (off_t)curtype_in_start, SEEK_SET) != 0) {
-                    fprintf(stderr, "Error: failed to seek input file\n");
-                    result = 1;
-                    goto cleanup;
-                }
-                typetally[curtype] += (unsigned)curtypecount;
-                if (flush_sector_run(&inedc, curtype, (unsigned)curtypecount, in, out, &progress) <
-                    0) {
-                    result = 1;
-                    goto cleanup;
-                }
-            }
-            curtype = detecttype;
-            curtype_in_start = incheckpos;
-            curtypecount = 0;
-        } else {
-            if (first_run) {
-                curtype = detecttype;
-                curtype_in_start = incheckpos;
-                first_run = false;
-            }
-        }
-
-        /* Determine how far to advance and tally counts */
+        /* Classify at raw-sector granularity; a short tail can only be literal */
         size_t step;
-        if (curtype == SECTOR_TYPE_LITERAL) {
-            step = (dataavail >= SECTOR_SIZE_RAW) ? SECTOR_SIZE_RAW : dataavail;
-            if (step == 0) {
-                step = 1; /* Safety to avoid infinite loop */
-            }
-            curtypecount += (int64_t)step;
+        int rc;
+        if (dataavail < SECTOR_SIZE_RAW) {
+            step = dataavail;
+            rc = run_add(&enc, SECTOR_TYPE_LITERAL, incheckpos, (int64_t)step);
         } else {
             step = SECTOR_SIZE_RAW;
-            curtypecount++;
+            sector_type_t type = check_type_raw(inputqueue + INPUT_QUEUE_PADDING + inqueuestart);
+            rc = queue_raw_sector(&enc, type, incheckpos);
+        }
+        if (rc < 0) {
+            result = 1;
+            goto cleanup;
         }
 
-        /* Advance position */
         incheckpos += (int64_t)step;
         inqueuestart += step;
         dataavail -= step;
-
-        /* Force flush if run length approaches the 32-bit encoding limit */
-        if (curtypecount >= (int64_t)(UINT32_MAX - SECTOR_SIZE_RAW)) {
-            ECM_VERBOSE(verbose, "Splitting batch: type=%s, count=%lld", type_names[curtype],
-                        (long long)curtypecount);
-            if (fseeko(in, (off_t)curtype_in_start, SEEK_SET) != 0) {
-                fprintf(stderr, "Error: failed to seek input file\n");
-                result = 1;
-                goto cleanup;
-            }
-            typetally[curtype] += (unsigned)curtypecount;
-            if (flush_sector_run(&inedc, curtype, (unsigned)curtypecount, in, out, &progress) < 0) {
-                result = 1;
-                goto cleanup;
-            }
-            curtype_in_start = incheckpos;
-            curtypecount = 0;
-        }
     }
 
-    /* Flush final run */
-    if (curtypecount) {
-        ECM_VERBOSE(verbose, "Flushing final batch: type=%s, count=%lld", type_names[curtype],
-                    (long long)curtypecount);
-        if (fseeko(in, (off_t)curtype_in_start, SEEK_SET) != 0) {
-            fprintf(stderr, "Error: failed to seek input file\n");
-            result = 1;
-            goto cleanup;
-        }
-        typetally[curtype] += (unsigned)curtypecount;
-        if (flush_sector_run(&inedc, curtype, (unsigned)curtypecount, in, out, &progress) < 0) {
-            result = 1;
-            goto cleanup;
-        }
+    if (run_flush(&enc, "Flushing final batch") < 0) {
+        result = 1;
+        goto cleanup;
     }
 
     if (write_type_count(out, 0, 0) < 0) {
@@ -616,12 +630,12 @@ static int ecmify(FILE *in, FILE *out, bool verbose) {
         goto cleanup;
     }
 
-    if (write_edc_checksum(out, inedc) < 0) {
+    if (write_edc_checksum(out, enc.edc) < 0) {
         result = 1;
         goto cleanup;
     }
 
-    print_report(typetally, intotallength, out);
+    print_report(enc.typetally, intotallength, out);
 
 cleanup:
     free(inputqueue);

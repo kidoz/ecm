@@ -115,8 +115,8 @@ CD-ROM sectors contain user data plus error correction codes. ECM identifies sec
 | Sector Type | Raw Size | Stored | Savings | Description |
 |-------------|----------|--------|---------|-------------|
 | Mode 1 | 2352 B | 2051 B | ~13% | Standard data with full ECC/EDC |
-| Mode 2 Form 1 | 2352 B | 2052 B | ~13% | XA data with ECC/EDC |
-| Mode 2 Form 2 | 2352 B | 2336 B | ~1% | XA audio/video (EDC only) |
+| Mode 2 Form 1 | 2352 B | 2068 B | ~12% | XA data with ECC/EDC; 16-byte sync/header kept as literal bytes |
+| Mode 2 Form 2 | 2352 B | 2344 B | <1% | XA audio/video (EDC only); 16-byte sync/header kept as literal bytes |
 | Literal | varies | varies | 0% | Non-standard data (stored as-is) |
 
 Typical compression ratios for game discs: **10-15% size reduction**.

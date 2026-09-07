@@ -40,9 +40,11 @@
  * CD Sector Constants (C23 constexpr where possible)
  */
 enum {
-    SECTOR_SIZE_RAW = 2352,   /* Full raw sector size */
-    SECTOR_SIZE_MODE2 = 2336, /* Mode 2 sector size (without sync) */
-    SECTOR_USER_DATA = 2048,  /* User data area size */
+    SECTOR_SIZE_RAW = 2352,       /* Full raw sector size */
+    SECTOR_SIZE_MODE2 = 2336,     /* Mode 2 sector size (without sync) */
+    SECTOR_USER_DATA = 2048,      /* User data area size */
+    SECTOR_SYNC_HEADER_SIZE = 16, /* Sync (12) + MSF address (3) + mode (1); the part of a raw
+                                     Mode 2 sector that an ECM type 2/3 record does not carry */
 };
 
 /* Sync pattern offsets */

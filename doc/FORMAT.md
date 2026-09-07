@@ -171,44 +171,34 @@ mode bytes are NOT included.
 
 The redundant flags and EDC bytes are reconstructed upon decoding.
 
-## Limitations and Notes
+## Implementation Notes
 
-### Implementation Note: Output Sector Size
+Everything above is Neill Corlett's original specification. This implementation follows it
+exactly, including the record semantics for Mode 2.
 
-This implementation outputs **2352 bytes** (full raw sectors) for all sector types:
+### Raw Mode 2 Sectors
 
-| Sector Type | Original ECM Spec | This Implementation |
-|-------------|-------------------|---------------------|
-| Mode 1 | 2352 bytes | 2352 bytes |
-| Mode 2 Form 1 | 2336 bytes | **2352 bytes** |
-| Mode 2 Form 2 | 2336 bytes | **2352 bytes** |
+A type 2 or type 3 record expands to the **2336-byte** Mode 2 body (flags through EDC/ECC).
+It has no field for sync, address, or mode. When the encoder meets a raw 2352-byte Mode 2
+sector it therefore emits two records, exactly as the original `ecm` did:
 
-The original ECM format specification describes Mode 2 sectors expanding to 2336 bytes
-(without sync/address/mode). This implementation instead reconstructs full 2352-byte
-raw sectors for all types, enabling:
+| Record | Content |
+|--------|---------|
+| Type 0, count 16 | Sync pattern, MSF address, and mode byte, stored verbatim |
+| Type 2 or 3, count 1 | FLAGS + DATA for the 2336-byte body |
 
-- **Round-trip consistency**: encode(decode(file)) == file
-- **Uniform sector size**: All output sectors are 2352 bytes
-- **Raw image compatibility**: Works directly with tools expecting 2352-byte sectors
+The original address survives the roundtrip because it is stored rather than regenerated,
+and the decoded image is byte-for-byte identical to the input. Streams written by this tool
+decode with the original `unecm`, and streams written by the original `ecm` decode with this
+tool.
 
-**Compatibility note**: ECM files created by this tool are compatible with the original
-format. However, decoded output will differ from the original ECM tools for Mode 2 sectors
-(2352 bytes vs 2336 bytes).
+### Files From Versions 1.2.0 to 1.3.1
 
-### MSF Address Handling
-
-| Sector Type | MSF (Address) Behavior |
-|-------------|------------------------|
-| Mode 1 | **Preserved** - Original MSF stored in ECM, restored on decode |
-| Mode 2 Form 1/2 | **Generated** - Sequential MSF addresses generated starting from 00:02:00 |
-
-For Mode 2 sectors, the decoder generates sequential BCD-encoded MSF addresses.
-The original MSF is not preserved because it is not stored in the ECM format.
-
-**Implication:** For multi-track discs or images with non-sequential sector addresses,
-Mode 2 sectors will have regenerated sequential MSF values. This is acceptable for most
-single-track data discs (e.g., PlayStation games) but may affect specialized use cases
-requiring exact sector addressing.
+Those versions dropped the 16 header bytes when encoding raw Mode 2 sectors and had the
+decoder emit 2352-byte sectors with sequential addresses generated from 00:02:00. Files they
+produced still decode, but as the format specifies: each Mode 2 record yields 2336 bytes, so
+the output is a MODE2/2336 image rather than a 2352-byte image with invented headers. The
+original addresses were never stored, so no decoder can recover them.
 
 ## Contact
 

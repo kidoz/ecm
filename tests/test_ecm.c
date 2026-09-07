@@ -646,6 +646,159 @@ void test_literal_encoding_batching(void) {
 }
 
 /*
+ * Expect one record of the given type/count whose payload equals expected[0..len).
+ */
+static bool expect_record(FILE *f, unsigned type, unsigned count, const uint8_t *expected,
+                          size_t len) {
+    unsigned got_type, got_count;
+    uint8_t buf[SECTOR_SIZE_RAW];
+
+    if (!fixture_read_type_count(f, &got_type, &got_count)) {
+        printf("FAIL: truncated record header\n");
+        return false;
+    }
+    if (got_type != type || got_count != count) {
+        printf("FAIL: expected record type %u count %u, got type %u count %u\n", type, count,
+               got_type, got_count);
+        return false;
+    }
+    if (fread(buf, 1, len, f) != len || memcmp(buf, expected, len) != 0) {
+        printf("FAIL: record payload mismatch\n");
+        return false;
+    }
+    return true;
+}
+
+/*
+ * Expect an archive holding n consecutive raw Mode 2 sectors of one form. Each sector must
+ * appear as a 16-byte literal (sync + header) followed by a single type 2/3 record, and the
+ * trailing EDC must cover the original raw bytes - the upstream ECM layout.
+ */
+static bool expect_mode2_archive(FILE *f, const uint8_t *sectors, int n, sector_type_t form) {
+    size_t payload =
+        form == SECTOR_TYPE_MODE2_FORM1 ? MODE2_FORM1_DATA_SIZE : MODE2_FORM2_DATA_SIZE;
+    unsigned type, count;
+    uint8_t expected_edc[EDC_SIZE];
+    uint8_t got_edc[EDC_SIZE];
+
+    rewind(f);
+    if (fgetc(f) != ECM_MAGIC_E || fgetc(f) != ECM_MAGIC_C || fgetc(f) != ECM_MAGIC_M ||
+        fgetc(f) != ECM_MAGIC_NULL) {
+        printf("FAIL: bad magic\n");
+        return false;
+    }
+    for (int i = 0; i < n; i++) {
+        const uint8_t *sector = sectors + (size_t)i * SECTOR_SIZE_RAW;
+        if (!expect_record(f, SECTOR_TYPE_LITERAL, SECTOR_SYNC_HEADER_SIZE, sector,
+                           SECTOR_SYNC_HEADER_SIZE)) {
+            return false;
+        }
+        if (!expect_record(f, form, 1, sector + OFFSET_MODE2_SUBHEADER + MODE2_SUBHEADER_SIZE,
+                           payload)) {
+            return false;
+        }
+    }
+    if (!fixture_read_type_count(f, &type, &count) || type != SECTOR_TYPE_LITERAL || count != 0) {
+        printf("FAIL: missing end marker\n");
+        return false;
+    }
+    edc_write_bytes(edc_compute(0, sectors, (size_t)n * SECTOR_SIZE_RAW), expected_edc);
+    if (fread(got_edc, 1, EDC_SIZE, f) != EDC_SIZE ||
+        memcmp(got_edc, expected_edc, EDC_SIZE) != 0) {
+        printf("FAIL: trailing EDC does not cover the raw input\n");
+        return false;
+    }
+    if (fgetc(f) != EOF) {
+        printf("FAIL: trailing bytes after EDC\n");
+        return false;
+    }
+    return true;
+}
+
+/*
+ * Test: batch mode keeps a Mode 2 header with a non-sequential address as literal bytes.
+ * Before the fix the 16 header bytes were dropped, so 00:03:00 came back as 00:02:00.
+ */
+void test_mode2_header_kept_as_literal_batch(void) {
+    TEST(mode2_header_kept_as_literal_batch);
+
+    eccedc_init();
+
+    static const uint8_t msf[3] = {0x00, 0x03, 0x00};
+    uint8_t sector[SECTOR_SIZE_RAW];
+    fixture_mode2_sector(sector, SECTOR_TYPE_MODE2_FORM1, msf, 7);
+
+    FILE *fin = tmpfile();
+    FILE *fout = tmpfile();
+    ASSERT_TRUE(fin != nullptr && fout != nullptr);
+    ASSERT_EQ(1, fwrite(sector, SECTOR_SIZE_RAW, 1, fin));
+    rewind(fin);
+
+    ASSERT_EQ(0, ecmify(fin, fout, false));
+    ASSERT_TRUE(expect_mode2_archive(fout, sector, 1, SECTOR_TYPE_MODE2_FORM1));
+
+    fclose(fin);
+    fclose(fout);
+    PASS();
+}
+
+/*
+ * Test: streaming mode produces the same literal + record layout, here for Form 2.
+ */
+void test_mode2_header_kept_as_literal_streaming(void) {
+    TEST(mode2_header_kept_as_literal_streaming);
+
+    eccedc_init();
+
+    static const uint8_t msf[3] = {0x12, 0x34, 0x56};
+    uint8_t sector[SECTOR_SIZE_RAW];
+    fixture_mode2_sector(sector, SECTOR_TYPE_MODE2_FORM2, msf, 11);
+
+    FILE *fin = tmpfile();
+    FILE *fout = tmpfile();
+    ASSERT_TRUE(fin != nullptr && fout != nullptr);
+    ASSERT_EQ(1, fwrite(sector, SECTOR_SIZE_RAW, 1, fin));
+    rewind(fin);
+
+    ASSERT_EQ(0, ecmify_streaming(fin, fout, false));
+    ASSERT_TRUE(expect_mode2_archive(fout, sector, 1, SECTOR_TYPE_MODE2_FORM2));
+
+    fclose(fin);
+    fclose(fout);
+    PASS();
+}
+
+/*
+ * Test: consecutive Mode 2 sectors alternate literal and sector records instead of being
+ * merged into one run, because each header must stay in front of its own body.
+ */
+void test_mode2_run_alternates_literal_and_record(void) {
+    TEST(mode2_run_alternates_literal_and_record);
+
+    eccedc_init();
+
+    uint8_t sectors[3 * SECTOR_SIZE_RAW];
+    for (int i = 0; i < 3; i++) {
+        uint8_t msf[3] = {0x00, 0x05, (uint8_t)(0x10 + i)};
+        fixture_mode2_sector(sectors + (size_t)i * SECTOR_SIZE_RAW, SECTOR_TYPE_MODE2_FORM1, msf,
+                             (uint8_t)(3 + i));
+    }
+
+    FILE *fin = tmpfile();
+    FILE *fout = tmpfile();
+    ASSERT_TRUE(fin != nullptr && fout != nullptr);
+    ASSERT_EQ(1, fwrite(sectors, sizeof(sectors), 1, fin));
+    rewind(fin);
+
+    ASSERT_EQ(0, ecmify(fin, fout, false));
+    ASSERT_TRUE(expect_mode2_archive(fout, sectors, 3, SECTOR_TYPE_MODE2_FORM1));
+
+    fclose(fin);
+    fclose(fout);
+    PASS();
+}
+
+/*
  * Main test runner
  */
 int main(int argc, char **argv) {
@@ -683,6 +836,11 @@ int main(int argc, char **argv) {
     TEST_CATEGORY("\nEncoder Efficiency Tests");
     test_sector_size_constants();
     test_literal_encoding_batching();
+
+    TEST_CATEGORY("\nRecord Layout Tests");
+    test_mode2_header_kept_as_literal_batch();
+    test_mode2_header_kept_as_literal_streaming();
+    test_mode2_run_alternates_literal_and_record();
 
     TEST_SUITE_END();
 }

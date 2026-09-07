@@ -177,6 +177,7 @@ def main():
     mode = sys.argv[1]
     count = int(sys.argv[2])
     path = sys.argv[3]
+    start = int(sys.argv[4]) if len(sys.argv) > 4 else 0
     builders = {
         "mode1": make_mode1,
         "mode2f1": make_mode2_form1,
@@ -185,10 +186,68 @@ def main():
     build = builders[mode]
     with open(path, "wb") as f:
         for i in range(count):
-            f.write(build(msf_from_index(i)))
+            f.write(build(msf_from_index(start + i)))
 
 if __name__ == "__main__":
     main()
+PY
+}
+
+# Build an ECM stream from a raw Mode 2 image without using the encoder under test.
+# with-header: the upstream layout (16-byte literal + type 2/3 record per sector), whose
+#              decoded output must equal the raw image
+# headerless:  type 2/3 records only, describing 2336-byte sectors; also writes the
+#              expected 2336-byte-per-sector output to <expected>
+# usage: build_spec_ecm with-header|headerless <raw.bin> <out.ecm> [<expected>]
+build_spec_ecm() {
+python3 - <<'PY' "$@"
+import struct, sys
+
+def init_edc():
+    lut = [0] * 256
+    for i in range(256):
+        v = i
+        for _ in range(8):
+            v = (v >> 1) ^ (0xD8018001 if (v & 1) else 0)
+        lut[i] = v & 0xFFFFFFFF
+    return lut
+
+EDC_LUT = init_edc()
+
+def edc_compute(edc, data):
+    for b in data:
+        edc = ((edc >> 8) ^ EDC_LUT[(edc ^ b) & 0xFF]) & 0xFFFFFFFF
+    return edc
+
+def type_count(t, count):
+    c = (count - 1) & 0xFFFFFFFF
+    out = bytes([((c >= 32) << 7) | ((c & 31) << 2) | t])
+    c >>= 5
+    while c:
+        out += bytes([((c >= 128) << 7) | (c & 127)])
+        c >>= 7
+    return out
+
+layout, raw_path, ecm_path = sys.argv[1:4]
+raw = open(raw_path, "rb").read()
+assert len(raw) % 2352 == 0, "raw image must be whole 2352-byte sectors"
+
+ecm = bytearray(b"ECM\x00")
+covered = bytearray()
+for off in range(0, len(raw), 2352):
+    sector = raw[off:off + 2352]
+    form2 = sector[0x12] & 0x20
+    rec_type, payload_len = (3, 0x918) if form2 else (2, 0x804)
+    if layout == "with-header":
+        ecm += type_count(0, 16) + sector[:16]
+        covered += sector
+    else:
+        covered += sector[0x10:]
+    ecm += type_count(rec_type, 1) + sector[0x14:0x14 + payload_len]
+ecm += type_count(0, 0) + struct.pack("<I", edc_compute(0, covered))
+open(ecm_path, "wb").write(ecm)
+if len(sys.argv) > 4:
+    open(sys.argv[4], "wb").write(covered)
 PY
 }
 
@@ -416,6 +475,94 @@ else
     fi
 fi
 
+# Test 10: Mode 2 sectors whose addresses do not start at 00:02:00.
+# The decoder used to regenerate sequential addresses, so this only roundtripped by luck.
 echo ""
-echo "=== All roundtrip tests passed (9/9) ==="
+echo "--- Test 10: Mode 2 roundtrip with non-sequential addresses ---"
+M2ADDR_FILE="$TEST_DIR/mode2_addr.bin"
+generate_sectors mode2f1 4 "$M2ADDR_FILE" 4500                # first sector at 01:02:00
+generate_sectors mode2f2 3 "$TEST_DIR/mode2f2_addr.bin" 9000  # 02:02:00
+cat "$TEST_DIR/mode2f2_addr.bin" >> "$M2ADDR_FILE"
+
+ORIGINAL_SUM=$(sha256sum "$M2ADDR_FILE" | cut -d' ' -f1)
+"$ECM_BIN" "$M2ADDR_FILE" "$TEST_DIR/mode2_addr.bin.ecm" 2>&1 || true
+"$UNECM_BIN" "$TEST_DIR/mode2_addr.bin.ecm" "$TEST_DIR/mode2_addr_decoded.bin" 2>&1 || true
+DECODED_SUM=$(sha256sum "$TEST_DIR/mode2_addr_decoded.bin" | cut -d' ' -f1)
+
+if [ "$ORIGINAL_SUM" = "$DECODED_SUM" ]; then
+    echo "PASS: Mode 2 addresses preserved"
+else
+    echo "FAIL: Checksums don't match!"
+    echo "  Original: $ORIGINAL_SUM"
+    echo "  Decoded:  $DECODED_SUM"
+    exit 1
+fi
+
+# Test 11: Mixed image - every sector type plus a partial trailing sector
+echo ""
+echo "--- Test 11: Mixed sector types with partial tail ---"
+MIXED_FILE="$TEST_DIR/mixed.bin"
+generate_sectors mode1 3 "$MIXED_FILE" 150
+generate_sectors mode2f1 2 "$TEST_DIR/mixed_f1.bin" 153
+generate_sectors mode2f2 2 "$TEST_DIR/mixed_f2.bin" 155
+cat "$TEST_DIR/mixed_f1.bin" "$TEST_DIR/mixed_f2.bin" >> "$MIXED_FILE"
+dd if=/dev/urandom bs=100 count=1 >> "$MIXED_FILE" 2>/dev/null
+
+ORIGINAL_SUM=$(sha256sum "$MIXED_FILE" | cut -d' ' -f1)
+"$ECM_BIN" "$MIXED_FILE" "$TEST_DIR/mixed.bin.ecm" 2>&1 || true
+"$UNECM_BIN" "$TEST_DIR/mixed.bin.ecm" "$TEST_DIR/mixed_decoded.bin" 2>&1 || true
+DECODED_SUM=$(sha256sum "$TEST_DIR/mixed_decoded.bin" | cut -d' ' -f1)
+
+if [ "$ORIGINAL_SUM" = "$DECODED_SUM" ]; then
+    echo "PASS: Mixed image roundtrip successful"
+else
+    echo "FAIL: Checksums don't match!"
+    exit 1
+fi
+
+# Test 12: Streaming mode through stdin/stdout on the mixed image
+echo ""
+echo "--- Test 12: Streaming roundtrip via stdin/stdout ---"
+"$ECM_BIN" - - < "$MIXED_FILE" > "$TEST_DIR/mixed_stream.ecm" 2>/dev/null
+"$UNECM_BIN" - - < "$TEST_DIR/mixed_stream.ecm" > "$TEST_DIR/mixed_stream_decoded.bin" 2>/dev/null
+DECODED_SUM=$(sha256sum "$TEST_DIR/mixed_stream_decoded.bin" | cut -d' ' -f1)
+
+if [ "$ORIGINAL_SUM" = "$DECODED_SUM" ]; then
+    echo "PASS: Streaming roundtrip successful"
+else
+    echo "FAIL: Checksums don't match!"
+    exit 1
+fi
+
+# Test 13: Spec-conformant streams built independently of the encoder.
+# A type 2/3 record must expand to 2336 bytes: with the literal header in front that
+# reproduces the raw image; without it the output is the header-less 2336-byte image.
+echo ""
+echo "--- Test 13: Decoding spec-conformant ECM streams ---"
+build_spec_ecm with-header "$M2ADDR_FILE" "$TEST_DIR/spec_raw.ecm"
+"$UNECM_BIN" "$TEST_DIR/spec_raw.ecm" "$TEST_DIR/spec_raw_decoded.bin" 2>&1 || true
+DECODED_SUM=$(sha256sum "$TEST_DIR/spec_raw_decoded.bin" | cut -d' ' -f1)
+ORIGINAL_SUM=$(sha256sum "$M2ADDR_FILE" | cut -d' ' -f1)
+if [ "$ORIGINAL_SUM" != "$DECODED_SUM" ]; then
+    echo "FAIL: literal header + type 2/3 record did not reproduce the raw image"
+    echo "  Expected: $ORIGINAL_SUM ($(wc -c < "$M2ADDR_FILE" | tr -d ' ') bytes)"
+    echo "  Decoded:  $DECODED_SUM ($(wc -c < "$TEST_DIR/spec_raw_decoded.bin" | tr -d ' ') bytes)"
+    exit 1
+fi
+
+build_spec_ecm headerless "$M2ADDR_FILE" "$TEST_DIR/spec_2336.ecm" "$TEST_DIR/spec_2336_expected.bin"
+"$UNECM_BIN" "$TEST_DIR/spec_2336.ecm" "$TEST_DIR/spec_2336_decoded.bin" 2>&1 || true
+EXPECTED_SUM=$(sha256sum "$TEST_DIR/spec_2336_expected.bin" | cut -d' ' -f1)
+DECODED_SUM=$(sha256sum "$TEST_DIR/spec_2336_decoded.bin" | cut -d' ' -f1)
+if [ "$EXPECTED_SUM" = "$DECODED_SUM" ]; then
+    echo "PASS: Spec-conformant streams decode correctly"
+else
+    echo "FAIL: header-less type 2/3 records did not expand to 2336-byte sectors"
+    echo "  Expected: $EXPECTED_SUM ($(wc -c < "$TEST_DIR/spec_2336_expected.bin" | tr -d ' ') bytes)"
+    echo "  Decoded:  $DECODED_SUM ($(wc -c < "$TEST_DIR/spec_2336_decoded.bin" | tr -d ' ') bytes)"
+    exit 1
+fi
+
+echo ""
+echo "=== All roundtrip tests passed (13/13) ==="
 exit 0
