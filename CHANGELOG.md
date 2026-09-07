@@ -2,6 +2,31 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Fixed
+
+- **Mode 2 addresses lost on roundtrip** - Raw Mode 2 sectors are encoded as a 16-byte literal
+  record (sync, address, mode) followed by the type 2/3 record, the layout the original `ecm`
+  produces. The decoder no longer invents sequential addresses, so `unecm(ecm(x)) == x` holds
+  for Mode 2 images whose addresses do not start at 00:02:00
+- **Mode 2 record size** - Type 2/3 records expand to the 2336-byte body the specification
+  defines. Streams written by the original `ecm` now decode correctly instead of growing by
+  16 bytes per sector while still passing the EDC check
+- **Input destroyed when the output path aliased it** - Both tools refuse to run when the
+  output names the input file, including through symlinks and hard links, instead of
+  truncating it and reporting success
+- **Silent output failures** - Both tools check the final flush/close of the output (and
+  `unecm --cue` of the CUE sheet) and exit non-zero when buffered data could not be written
+- **Read errors treated as end of input** - Streaming mode (`ecm -`) reports a failing read
+  instead of writing a valid empty archive and exiting 0
+
+### Changed
+
+- Files produced by versions 1.2.0 to 1.3.1 from raw Mode 2 images now decode to 2336-byte
+  sectors, as the original `unecm` would, rather than to 2352-byte sectors with generated
+  headers (see `doc/FORMAT.md`, "Files From Versions 1.2.0 to 1.3.1")
+
 ## [1.3.1] - 2025-04-08
 
 ### Fixed
