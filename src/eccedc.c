@@ -1,5 +1,16 @@
+#ifndef _POSIX_C_SOURCE
+#define _POSIX_C_SOURCE 200809L
+#endif
+
 #include "eccedc.h"
 #include <string.h>
+
+#if defined(_WIN32) || defined(_WIN64)
+#include <io.h>
+#include <windows.h>
+#else
+#include <sys/stat.h>
+#endif
 
 /* Thread-safe initialization: use C11 threads where available, POSIX otherwise */
 #if defined(__STDC_NO_THREADS__) || (defined(__APPLE__) && defined(__MACH__))
@@ -269,3 +280,40 @@ void sector_copy_subheader(uint8_t *sector) {
     sector[OFFSET_MODE2_SUBHEADER + 2] = sector[OFFSET_MODE2_SUBHEADER + MODE2_SUBHEADER_SIZE + 2];
     sector[OFFSET_MODE2_SUBHEADER + 3] = sector[OFFSET_MODE2_SUBHEADER + MODE2_SUBHEADER_SIZE + 3];
 }
+
+#if defined(_WIN32) || defined(_WIN64)
+[[nodiscard]] bool file_is_same_as_path(FILE *f, const char *path) {
+    if (f == nullptr || path == nullptr) {
+        return false;
+    }
+    HANDLE hf = (HANDLE)_get_osfhandle(_fileno(f));
+    if (hf == INVALID_HANDLE_VALUE) {
+        return false;
+    }
+    /* Zero desired access is enough to query identity and never conflicts with a
+     * stream that is already open on the same file */
+    HANDLE hp = CreateFileA(path, 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                            nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (hp == INVALID_HANDLE_VALUE) {
+        return false;
+    }
+    BY_HANDLE_FILE_INFORMATION a, b;
+    bool same = GetFileInformationByHandle(hf, &a) && GetFileInformationByHandle(hp, &b) &&
+                a.dwVolumeSerialNumber == b.dwVolumeSerialNumber &&
+                a.nFileIndexHigh == b.nFileIndexHigh && a.nFileIndexLow == b.nFileIndexLow;
+    CloseHandle(hp);
+    return same;
+}
+#else
+[[nodiscard]] bool file_is_same_as_path(FILE *f, const char *path) {
+    if (f == nullptr || path == nullptr) {
+        return false;
+    }
+    struct stat a, b;
+    if (fstat(fileno(f), &a) != 0 || stat(path, &b) != 0) {
+        return false;
+    }
+    /* Device + inode identifies the file itself, so symlinks and hard links both match */
+    return a.st_dev == b.st_dev && a.st_ino == b.st_ino;
+}
+#endif

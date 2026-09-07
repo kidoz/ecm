@@ -10,6 +10,10 @@
 
 #include "eccedc.h"
 
+#if !defined(_WIN32) && !defined(_WIN64)
+#include <unistd.h>
+#endif
+
 /* Rename main() and other conflicting symbols from ecm.c */
 #define main   ecm_main
 #define banner ecm_banner
@@ -799,6 +803,46 @@ void test_mode2_run_alternates_literal_and_record(void) {
 }
 
 /*
+ * Test: file_is_same_as_path() recognises the same file through its own path and through a
+ * symlink, and rejects a different or missing file.
+ */
+void test_file_is_same_as_path(void) {
+    TEST(file_is_same_as_path);
+
+    const char *path = "test_same_file.bin";
+    const char *other = "test_same_file_other.bin";
+    const char *link = "test_same_file.lnk";
+
+    FILE *f = fopen(path, "wb");
+    ASSERT_TRUE(f != nullptr);
+    fputc('x', f);
+    fclose(f);
+    f = fopen(other, "wb");
+    ASSERT_TRUE(f != nullptr);
+    fputc('y', f);
+    fclose(f);
+
+    f = fopen(path, "rb");
+    ASSERT_TRUE(f != nullptr);
+    ASSERT_TRUE(file_is_same_as_path(f, path));
+    ASSERT_FALSE(file_is_same_as_path(f, other));
+    ASSERT_FALSE(file_is_same_as_path(f, "test_same_file_missing.bin"));
+#if !defined(_WIN32) && !defined(_WIN64)
+    remove(link);
+    ASSERT_EQ(0, symlink(path, link));
+    ASSERT_TRUE(file_is_same_as_path(f, link));
+    remove(link);
+#else
+    (void)link;
+#endif
+    fclose(f);
+    remove(path);
+    remove(other);
+
+    PASS();
+}
+
+/*
  * Main test runner
  */
 int main(int argc, char **argv) {
@@ -841,6 +885,9 @@ int main(int argc, char **argv) {
     test_mode2_header_kept_as_literal_batch();
     test_mode2_header_kept_as_literal_streaming();
     test_mode2_run_alternates_literal_and_record();
+
+    TEST_CATEGORY("\nI/O Safety Tests");
+    test_file_is_same_as_path();
 
     TEST_SUITE_END();
 }

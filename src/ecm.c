@@ -706,6 +706,13 @@ int main(int argc, char **argv) {
         }
     }
 
+    /* Opening the output truncates it, so refuse any path that aliases the input */
+    if (!is_stdio(outfilename) && file_is_same_as_path(fin, outfilename)) {
+        fprintf(stderr, "Error: input and output are the same file: %s\n", outfilename);
+        result = 1;
+        goto cleanup;
+    }
+
     /* Open output */
     if (is_stdio(outfilename)) {
         fout = stdout;

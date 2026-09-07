@@ -225,4 +225,15 @@ void sector_init_sync(uint8_t *sector);
  */
 void sector_copy_subheader(uint8_t *sector);
 
+/*
+ * Check whether an open stream and a path name the same underlying file.
+ * Follows symlinks and recognises hard links, so it is safe to call before truncating an
+ * output path that might alias the input.
+ *
+ * @param f     Open stream (must not be null)
+ * @param path  Path to compare against (need not exist)
+ * @return      true only when both resolve to the same file; false on any error
+ */
+[[nodiscard]] bool file_is_same_as_path(FILE *f, const char *path);
+
 #endif /* ECCEDC_H */

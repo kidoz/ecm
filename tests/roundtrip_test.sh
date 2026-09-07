@@ -563,6 +563,43 @@ else
     exit 1
 fi
 
+# Test 14: Output that aliases the input must be refused, leaving the input intact
 echo ""
-echo "=== All roundtrip tests passed (13/13) ==="
+echo "--- Test 14: Identical input and output paths are refused ---"
+SAME_FILE="$TEST_DIR/same.bin"
+cp "$MODE1_FILE" "$SAME_FILE"
+SUM_BEFORE=$(sha256sum "$SAME_FILE" | cut -d' ' -f1)
+
+if "$ECM_BIN" "$SAME_FILE" "$SAME_FILE" > /dev/null 2>&1; then
+    echo "FAIL: ecm accepted identical input and output paths"
+    exit 1
+fi
+ln -s "same.bin" "$TEST_DIR/same_alias.bin"
+if "$ECM_BIN" "$SAME_FILE" "$TEST_DIR/same_alias.bin" > /dev/null 2>&1; then
+    echo "FAIL: ecm accepted a symlink alias of the input as output"
+    exit 1
+fi
+SUM_AFTER=$(sha256sum "$SAME_FILE" | cut -d' ' -f1)
+if [ "$SUM_BEFORE" != "$SUM_AFTER" ]; then
+    echo "FAIL: ecm truncated its own input"
+    exit 1
+fi
+
+SAME_ECM="$TEST_DIR/same.ecm"
+cp "$TEST_DIR/mode1.bin.ecm" "$SAME_ECM"
+SUM_BEFORE=$(sha256sum "$SAME_ECM" | cut -d' ' -f1)
+if "$UNECM_BIN" "$SAME_ECM" "$SAME_ECM" > /dev/null 2>&1; then
+    echo "FAIL: unecm accepted identical input and output paths"
+    exit 1
+fi
+SUM_AFTER=$(sha256sum "$SAME_ECM" | cut -d' ' -f1)
+if [ "$SUM_BEFORE" = "$SUM_AFTER" ]; then
+    echo "PASS: Aliased output refused, inputs intact"
+else
+    echo "FAIL: unecm truncated its own input"
+    exit 1
+fi
+
+echo ""
+echo "=== All roundtrip tests passed (14/14) ==="
 exit 0
