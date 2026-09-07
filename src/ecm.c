@@ -5,6 +5,7 @@
 #define _FILE_OFFSET_BITS 64
 #endif
 
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -370,6 +371,11 @@ static int ecmify_streaming(FILE *in, FILE *out, bool verbose) {
 
     for (;;) {
         size_t dataavail = fread(buf, 1, SECTOR_SIZE_RAW, in);
+        /* A short read is only the end of input when the stream carries no error */
+        if (dataavail < SECTOR_SIZE_RAW && ferror(in)) {
+            fprintf(stderr, "Error: failed to read input: %s\n", strerror(errno));
+            return 1;
+        }
         if (dataavail == 0) {
             break;
         }

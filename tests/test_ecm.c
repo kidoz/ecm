@@ -803,6 +803,33 @@ void test_mode2_run_alternates_literal_and_record(void) {
 }
 
 /*
+ * Test: a read error on the input stream is an error, not end of input.
+ * Reading a directory fails with EISDIR on POSIX; before the fix the encoder answered with
+ * a valid empty archive and exit status 0.
+ */
+void test_streaming_rejects_read_error(void) {
+    TEST(streaming_rejects_read_error);
+
+    eccedc_init();
+
+    FILE *fin = fopen(".", "rb");
+    if (fin == nullptr) {
+        /* Platforms that refuse to open a directory cannot produce this failure mode */
+        printf("SKIP (cannot open a directory as a stream) ... ");
+        PASS();
+        return;
+    }
+    FILE *fout = tmpfile();
+    ASSERT_TRUE(fout != nullptr);
+
+    ASSERT_EQ(1, ecmify_streaming(fin, fout, false));
+
+    fclose(fin);
+    fclose(fout);
+    PASS();
+}
+
+/*
  * Test: file_is_same_as_path() recognises the same file through its own path and through a
  * symlink, and rejects a different or missing file.
  */
@@ -887,6 +914,7 @@ int main(int argc, char **argv) {
     test_mode2_run_alternates_literal_and_record();
 
     TEST_CATEGORY("\nI/O Safety Tests");
+    test_streaming_rejects_read_error();
     test_file_is_same_as_path();
 
     TEST_SUITE_END();

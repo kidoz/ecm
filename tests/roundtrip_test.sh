@@ -600,6 +600,16 @@ else
     exit 1
 fi
 
+# Test 15: A read error on stdin is an error, not an empty input
 echo ""
-echo "=== All roundtrip tests passed (14/14) ==="
+echo "--- Test 15: Unreadable stdin is rejected ---"
+if "$ECM_BIN" - "$TEST_DIR/unreadable.ecm" < "$TEST_DIR" > /dev/null 2>&1; then
+    echo "FAIL: ecm reported success on an unreadable stream"
+    exit 1
+else
+    echo "PASS: Unreadable stdin rejected"
+fi
+
+echo ""
+echo "=== All roundtrip tests passed (15/15) ==="
 exit 0
