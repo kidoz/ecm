@@ -324,12 +324,14 @@ static int write_cue_file(const char *outfilename, const decode_stats_t *stats) 
     fprintf(cuefile, "  TRACK 01 %s\n", cue_track_mode(stats));
     fprintf(cuefile, "    INDEX 01 00:00:00\n");
 
+    if (output_finish(cuefile, cuefilename) != 0) {
+        result = 1;
+        goto cleanup;
+    }
+
     fprintf(stderr, "Created CUE file: %s\n", cuefilename);
 
 cleanup:
-    if (cuefile) {
-        fclose(cuefile);
-    }
     free(cuefilename);
     return result;
 }
@@ -446,11 +448,11 @@ int main(int argc, char **argv) {
 
     result = unecmify(fin, fout, &stats, is_stdio(infilename), verbose);
 
-    /* Close output file before creating CUE */
-    if (fout && !is_stdio(outfilename)) {
-        fclose(fout);
-        fout = nullptr;
+    /* Finish the BIN before writing a CUE so a truncated image never gets a sheet */
+    if (output_finish(fout, is_stdio(outfilename) ? "stdout" : outfilename) != 0 && result == 0) {
+        result = 1;
     }
+    fout = nullptr;
 
     /* Write CUE file if requested */
     if (result == 0 && createcue && !is_stdio(outfilename)) {
@@ -458,9 +460,6 @@ int main(int argc, char **argv) {
     }
 
 cleanup:
-    if (fout && !is_stdio(outfilename)) {
-        fclose(fout);
-    }
     if (fin && !is_stdio(infilename)) {
         fclose(fin);
     }

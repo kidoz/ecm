@@ -3,6 +3,7 @@
 #endif
 
 #include "eccedc.h"
+#include <errno.h>
 #include <string.h>
 
 #if defined(_WIN32) || defined(_WIN64)
@@ -317,3 +318,21 @@ void sector_copy_subheader(uint8_t *sector) {
     return a.st_dev == b.st_dev && a.st_ino == b.st_ino;
 }
 #endif
+
+[[nodiscard]] int output_finish(FILE *out, const char *name) {
+    if (out == nullptr) {
+        return 0;
+    }
+    /* Capture the sticky error flag before fclose() releases the stream */
+    bool had_error = ferror(out) != 0;
+    int rc = (out == stdout) ? fflush(out) : fclose(out);
+    if (rc != 0) {
+        fprintf(stderr, "Error: failed to write %s: %s\n", name, strerror(errno));
+        return -1;
+    }
+    if (had_error) {
+        fprintf(stderr, "Error: output %s is incomplete\n", name);
+        return -1;
+    }
+    return 0;
+}

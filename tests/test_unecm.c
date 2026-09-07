@@ -10,6 +10,14 @@
 
 #include "eccedc.h"
 
+#if defined(_WIN32) || defined(_WIN64)
+#include <io.h>
+#define close  _close
+#define fileno _fileno
+#else
+#include <unistd.h>
+#endif
+
 /* Rename main() and other conflicting symbols from unecm.c */
 #define main   unecm_main
 #define banner unecm_banner
@@ -687,6 +695,37 @@ void test_mode2_form2_stream_roundtrips_raw_sector(void) {
 }
 
 /*
+ * Test: output_finish() reports a flush failure that buffered writes hid.
+ * Closing the descriptor underneath the stream makes the final flush fail with EBADF, the
+ * same shape as a full disk or a closed pipe at exit.
+ */
+void test_output_finish_reports_flush_failure(void) {
+    TEST(output_finish_reports_flush_failure);
+
+    FILE *f = tmpfile();
+    ASSERT_TRUE(f != nullptr);
+    ASSERT_EQ('x', fputc('x', f)); /* buffered, not yet written */
+    ASSERT_EQ(0, close(fileno(f)));
+
+    ASSERT_EQ(-1, output_finish(f, "tmpfile"));
+    PASS();
+}
+
+/*
+ * Test: output_finish() succeeds on a healthy stream.
+ */
+void test_output_finish_succeeds(void) {
+    TEST(output_finish_succeeds);
+
+    FILE *f = tmpfile();
+    ASSERT_TRUE(f != nullptr);
+    ASSERT_EQ('x', fputc('x', f));
+
+    ASSERT_EQ(0, output_finish(f, "tmpfile"));
+    PASS();
+}
+
+/*
  * Main test runner
  */
 int main(int argc, char **argv) {
@@ -725,6 +764,10 @@ int main(int argc, char **argv) {
     test_mode2_record_expands_to_2336();
     test_mode2_form1_stream_roundtrips_raw_sector();
     test_mode2_form2_stream_roundtrips_raw_sector();
+
+    TEST_CATEGORY("\nOutput Safety Tests");
+    test_output_finish_reports_flush_failure();
+    test_output_finish_succeeds();
 
     TEST_SUITE_END();
 }

@@ -732,10 +732,13 @@ int main(int argc, char **argv) {
         result = ecmify(fin, fout, verbose);
     }
 
-cleanup:
-    if (fout && !is_stdio(outfilename)) {
-        fclose(fout);
+    /* Buffered data is only on disk once the flush succeeds */
+    if (output_finish(fout, is_stdio(outfilename) ? "stdout" : outfilename) != 0 && result == 0) {
+        result = 1;
     }
+    fout = nullptr;
+
+cleanup:
     if (fin && !is_stdio(infilename)) {
         fclose(fin);
     }

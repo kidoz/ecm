@@ -236,4 +236,14 @@ void sector_copy_subheader(uint8_t *sector);
  */
 [[nodiscard]] bool file_is_same_as_path(FILE *f, const char *path);
 
+/*
+ * Flush buffered output and report write failures that per-write checks cannot see.
+ * Closes the stream unless it is stdout, which is left open for the process.
+ *
+ * @param out   Output stream (must not be null)
+ * @param name  Name used in the error message
+ * @return      0 on success, -1 if the flush or close failed (message already printed)
+ */
+[[nodiscard]] int output_finish(FILE *out, const char *name);
+
 #endif /* ECCEDC_H */
