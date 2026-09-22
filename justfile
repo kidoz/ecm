@@ -94,3 +94,19 @@ valgrind-unecm *args:
 # Run performance benchmarks
 benchmark: build
     meson test -C {{build_dir}} perf_benchmark --verbose
+
+# Windows: configure a release build with MSVC (run from a Developer Command Prompt or after vcvars64.bat)
+setup-windows-msvc:
+    meson setup {{build_dir}} --native-file native/windows-msvc.ini
+
+# Windows: configure a release build with clang
+setup-windows-clang:
+    meson setup {{build_dir}} --native-file native/windows-clang.ini
+
+# Windows: build with the Visual Studio compiler
+build-windows: setup-windows-msvc
+    meson compile -C {{build_dir}}
+
+# Windows: build with clang
+build-windows-clang: setup-windows-clang
+    meson compile -C {{build_dir}}
