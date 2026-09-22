@@ -20,14 +20,34 @@ All notable changes to this project will be documented in this file.
   `unecm --cue` of the CUE sheet) and exit non-zero when buffered data could not be written
 - **Read errors treated as end of input** - Streaming mode (`ecm -`) reports a failing read
   instead of writing a valid empty archive and exiting 0
+- **Streaming mode on Windows** - `ecm - -` and `unecm - -` switch stdin/stdout to binary
+  mode. The C runtime's text mode stopped reading at the first 0x1A byte and turned every
+  0x0A written into 0x0D 0x0A, so piped images were truncated and corrupted
+- **MinGW-w64 GCC build** - `<threads.h>` is probed with `__has_include` and the POSIX
+  `pthread_once` fallback is used when it is missing; the 64-bit seek macros no longer clash
+  with the ones MinGW's `<stdio.h>` already defines
 
 ### Changed
 
 - Files produced by versions 1.2.0 to 1.3.1 from raw Mode 2 images now decode to 2336-byte
   sectors, as the original `unecm` would, rather than to 2352-byte sectors with generated
   headers (see `doc/FORMAT.md`, "Files From Versions 1.2.0 to 1.3.1")
+- **Packaging** - PKGBUILD and Homebrew formula point at the 1.3.1 release; the README
+  installs the formula from this repository instead of a non-existent cask
 
-## [1.3.1] - 2025-04-08
+### Development
+
+- The test suite runs on Windows: the flush-failure test writes into a closed pipe instead of
+  closing a descriptor under a live stream (fatal on the Windows CRT), the read-error test
+  reads a write-only stream instead of a directory, the roundtrip script converts its temp
+  directory for native Python and skips the symlink check when `ln -s` cannot create one,
+  and Meson runs the script through bash with forward-slash paths
+- New `stream_set_binary()` unit test
+- New `tests/test_tmpfile.h`: scratch streams come from the temp directory instead of
+  `tmpfile()`, which on the Windows CRTs targets the drive root and fails without
+  administrator rights
+
+## [1.3.1] - 2026-04-08
 
 ### Fixed
 
@@ -38,7 +58,7 @@ All notable changes to this project will be documented in this file.
 
 - **Packaging** - Updated packaging configuration
 
-## [1.3.0] - 2025-01-31
+## [1.3.0] - 2026-01-31
 
 ### Added
 
