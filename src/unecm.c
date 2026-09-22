@@ -11,9 +11,14 @@
 #include <sys/types.h>
 
 #if defined(_WIN32) || defined(_WIN64)
+/* MinGW-w64 already maps these to their 64-bit forms; only MSVC-style CRTs lack them */
+#ifndef fseeko
 #define fseeko _fseeki64
+#endif
+#ifndef ftello
 #define ftello _ftelli64
-#define off_t  long long
+#endif
+#define off_t long long
 #endif
 
 #include "eccedc.h"
@@ -418,6 +423,11 @@ int main(int argc, char **argv) {
     /* Open input */
     if (is_stdio(infilename)) {
         fin = stdin;
+        if (!stream_set_binary(fin)) {
+            fprintf(stderr, "Error: failed to set stdin to binary mode\n");
+            result = 1;
+            goto cleanup;
+        }
     } else {
         fin = fopen(infilename, "rb");
         if (!fin) {
@@ -437,6 +447,11 @@ int main(int argc, char **argv) {
     /* Open output */
     if (is_stdio(outfilename)) {
         fout = stdout;
+        if (!stream_set_binary(fout)) {
+            fprintf(stderr, "Error: failed to set stdout to binary mode\n");
+            result = 1;
+            goto cleanup;
+        }
     } else {
         fout = fopen(outfilename, "wb");
         if (!fout) {

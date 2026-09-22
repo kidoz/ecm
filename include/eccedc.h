@@ -237,6 +237,15 @@ void sector_copy_subheader(uint8_t *sector);
 [[nodiscard]] bool file_is_same_as_path(FILE *f, const char *path);
 
 /*
+ * Put a stream into binary mode so bytes pass through untranslated.
+ * Needed for stdin/stdout on Windows, where the CRT defaults to text mode; a no-op elsewhere.
+ *
+ * @param f  Open stream (must not be null)
+ * @return   true on success, false if the mode could not be changed
+ */
+[[nodiscard]] bool stream_set_binary(FILE *f);
+
+/*
  * Flush buffered output and report write failures that per-write checks cannot see.
  * Closes the stream unless it is stdout, which is left open for the process.
  *

@@ -7,14 +7,25 @@
 #include <string.h>
 
 #if defined(_WIN32) || defined(_WIN64)
+#include <fcntl.h>
 #include <io.h>
 #include <windows.h>
 #else
 #include <sys/stat.h>
 #endif
 
-/* Thread-safe initialization: use C11 threads where available, POSIX otherwise */
-#if defined(__STDC_NO_THREADS__) || (defined(__APPLE__) && defined(__MACH__))
+/*
+ * Thread-safe initialization: use C11 threads where the toolchain ships <threads.h>, POSIX
+ * otherwise. MinGW-w64 GCC does not define __STDC_NO_THREADS__ yet has no <threads.h>, so
+ * the header itself is probed rather than trusting the macro.
+ */
+#if defined(__has_include)
+#if __has_include(<threads.h>)
+#define ECM_HAVE_THREADS_H 1
+#endif
+#endif
+#if defined(__STDC_NO_THREADS__) || (defined(__APPLE__) && defined(__MACH__)) || \
+    !defined(ECM_HAVE_THREADS_H)
 #include <pthread.h>
 static pthread_once_t init_flag = PTHREAD_ONCE_INIT;
 #define call_once(flag, func) pthread_once(flag, func)
@@ -318,6 +329,19 @@ void sector_copy_subheader(uint8_t *sector) {
     return a.st_dev == b.st_dev && a.st_ino == b.st_ino;
 }
 #endif
+
+[[nodiscard]] bool stream_set_binary(FILE *f) {
+    if (f == nullptr) {
+        return false;
+    }
+#if defined(_WIN32) || defined(_WIN64)
+    /* The CRT opens the standard streams in text mode: reads stop at 0x1A and every 0x0A
+     * written becomes 0x0D 0x0A, which corrupts a sector stream in both directions */
+    return _setmode(_fileno(f), _O_BINARY) != -1;
+#else
+    return true;
+#endif
+}
 
 [[nodiscard]] int output_finish(FILE *out, const char *name) {
     if (out == nullptr) {
