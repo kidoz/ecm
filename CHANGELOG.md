@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.3.3] - 2026-09-22
+
 ### Added
 
 - **`unecm --mode2-2352`** - Expands Mode 2 records to 2352-byte sectors with regenerated
@@ -11,6 +13,13 @@ All notable changes to this project will be documented in this file.
   versions made from raw Mode 2 images decode back to the original image again, provided
   the addresses were sequential from 00:02:00, which is all those versions could reproduce.
   Options to `unecm` may now be given in any order; an unknown option is an error
+
+### Development
+
+- **Windows build recipes** - Meson native files under `native/` configure static-CRT release
+  builds with the Visual Studio compiler (`windows-msvc.ini`, which supplies the `/std:clatest`
+  and `nullptr` workarounds MSVC needs) or clang (`windows-clang.ini`), with matching
+  `just build-windows` and `just build-windows-clang` recipes and a README section
 
 ## [1.3.2] - 2026-09-22
 
