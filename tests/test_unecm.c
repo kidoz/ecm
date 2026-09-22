@@ -379,7 +379,7 @@ void test_unecmify_bad_magic(void) {
     rewind(fin);
 
     /* Should fail with wrong magic */
-    int result = unecmify(fin, fout, nullptr, false, false);
+    int result = unecmify(fin, fout, nullptr, false, false, false);
     ASSERT_TRUE(result != 0);
 
     fclose(fin);
@@ -408,7 +408,7 @@ void test_unecmify_truncated_header(void) {
     rewind(fin);
 
     /* Should fail with truncated header */
-    int result = unecmify(fin, fout, nullptr, false, false);
+    int result = unecmify(fin, fout, nullptr, false, false, false);
     ASSERT_TRUE(result != 0);
 
     fclose(fin);
@@ -460,7 +460,7 @@ void test_unecmify_bad_checksum(void) {
     rewind(fin);
 
     /* Should fail due to wrong checksum */
-    int result = unecmify(fin, fout, nullptr, false, false);
+    int result = unecmify(fin, fout, nullptr, false, false, false);
     ASSERT_TRUE(result != 0);
 
     fclose(fin);
@@ -502,7 +502,7 @@ void test_unecmify_empty_data(void) {
 
     rewind(fin);
 
-    int result = unecmify(fin, fout, nullptr, false, false);
+    int result = unecmify(fin, fout, nullptr, false, false, false);
     ASSERT_EQ(0, result);
 
     /* Output should be empty */
@@ -539,7 +539,7 @@ void test_unecmify_truncated_type_count(void) {
 
     rewind(fin);
 
-    int result = unecmify(fin, fout, nullptr, false, false);
+    int result = unecmify(fin, fout, nullptr, false, false, false);
     ASSERT_TRUE(result != 0);
 
     fclose(fin);
@@ -608,7 +608,7 @@ void test_mode2_record_expands_to_2336(void) {
     write_mode2_stream(fin, sector, SECTOR_TYPE_MODE2_FORM1, false);
 
     decode_stats_t stats = {false, false};
-    ASSERT_EQ(0, unecmify(fin, fout, &stats, false, false));
+    ASSERT_EQ(0, unecmify(fin, fout, &stats, false, false, false));
     ASSERT_TRUE(stats.saw_mode2);
 
     fseek(fout, 0, SEEK_END);
@@ -637,7 +637,7 @@ static bool roundtrips_raw_sector(const uint8_t *sector, sector_type_t form) {
         goto done;
     }
     write_mode2_stream(fin, sector, form, true);
-    if (unecmify(fin, fout, nullptr, false, false) != 0) {
+    if (unecmify(fin, fout, nullptr, false, false, false) != 0) {
         printf("FAIL: decode returned an error\n");
         goto done;
     }
@@ -692,6 +692,115 @@ void test_mode2_form2_stream_roundtrips_raw_sector(void) {
     fixture_mode2_sector(sector, SECTOR_TYPE_MODE2_FORM2, msf, 13);
 
     ASSERT_TRUE(roundtrips_raw_sector(sector, SECTOR_TYPE_MODE2_FORM2));
+    PASS();
+}
+
+/*
+ * Test: regenerate_mode2_header() derives the MSF address from the output position the way
+ * versions 1.2.0 to 1.3.1 did: sector number = bytes / 2352, plus the 150-frame pregap, BCD.
+ */
+void test_regenerate_mode2_header_addresses(void) {
+    TEST(regenerate_mode2_header_addresses);
+
+    static const struct {
+        int64_t outbytes;
+        uint8_t msf[3];
+    } cases[] = {
+        {0, {0x00, 0x02, 0x00}},                            /* first sector */
+        {1 * SECTOR_SIZE_RAW, {0x00, 0x02, 0x01}},          /* second sector */
+        {149 * SECTOR_SIZE_RAW, {0x00, 0x03, 0x74}},        /* last frame of a second */
+        {4500 * SECTOR_SIZE_RAW, {0x01, 0x02, 0x00}},       /* minute rollover */
+        {4500 * SECTOR_SIZE_RAW + 100, {0x01, 0x02, 0x00}}, /* partial sector counts as its start */
+    };
+    uint8_t expected_sync[SECTOR_SYNC_HEADER_SIZE];
+
+    memset(expected_sync, 0, sizeof(expected_sync));
+    fixture_sync(expected_sync);
+
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        uint8_t sector[SECTOR_SIZE_RAW];
+        memset(sector, 0xAA, sizeof(sector));
+        regenerate_mode2_header(sector, cases[i].outbytes);
+        ASSERT_MEM_EQ(expected_sync, sector, OFFSET_HEADER);
+        ASSERT_MEM_EQ(cases[i].msf, sector + OFFSET_HEADER, MODE1_ADDRESS_SIZE);
+        ASSERT_EQ(0x02, sector[OFFSET_MODE]);
+        ASSERT_EQ_MSG(0xAA, sector[SECTOR_SYNC_HEADER_SIZE], "body must be left untouched");
+    }
+    PASS();
+}
+
+/*
+ * Test: --mode2-2352 restores an archive written by versions 1.2.0 to 1.3.1. Those encoders
+ * dropped the 16-byte header of raw Mode 2 sectors, and their decoder regenerated it with a
+ * sequential address that counted every output byte, literal runs included. A stream of one
+ * literal sector followed by header-less Form 1 and Form 2 records must therefore decode to
+ * three consecutive raw sectors at 00:02:00, 00:02:01 and 00:02:02.
+ */
+void test_mode2_2352_restores_legacy_archive(void) {
+    TEST(mode2_2352_restores_legacy_archive);
+
+    eccedc_init();
+
+    static const uint8_t msf0[3] = {0x00, 0x02, 0x00};
+    static const uint8_t msf1[3] = {0x00, 0x02, 0x01};
+    static const uint8_t msf2[3] = {0x00, 0x02, 0x02};
+    uint8_t image[3 * SECTOR_SIZE_RAW];
+    uint8_t *s0 = image;
+    uint8_t *s1 = image + SECTOR_SIZE_RAW;
+    uint8_t *s2 = image + 2 * SECTOR_SIZE_RAW;
+    uint8_t edc[EDC_SIZE];
+    uint32_t covered = 0;
+
+    fixture_mode2_sector(s0, SECTOR_TYPE_MODE2_FORM1, msf0, 5);
+    fixture_mode2_sector(s1, SECTOR_TYPE_MODE2_FORM1, msf1, 7);
+    fixture_mode2_sector(s2, SECTOR_TYPE_MODE2_FORM2, msf2, 11);
+
+    FILE *fin = test_tmpfile();
+    FILE *fout = test_tmpfile();
+    ASSERT_TRUE(fin != nullptr && fout != nullptr);
+
+    fputc(ECM_MAGIC_E, fin);
+    fputc(ECM_MAGIC_C, fin);
+    fputc(ECM_MAGIC_M, fin);
+    fputc(ECM_MAGIC_NULL, fin);
+    /* Sector 0 stored literally, in full */
+    fixture_write_type_count(fin, SECTOR_TYPE_LITERAL, SECTOR_SIZE_RAW);
+    fwrite(s0, 1, SECTOR_SIZE_RAW, fin);
+    covered = edc_compute(covered, s0, SECTOR_SIZE_RAW);
+    /* Sectors 1 and 2 as header-less records; the legacy EDC covered their 2336-byte bodies */
+    fixture_write_type_count(fin, SECTOR_TYPE_MODE2_FORM1, 1);
+    fwrite(s1 + OFFSET_MODE2_SUBHEADER + MODE2_SUBHEADER_SIZE, 1, MODE2_FORM1_DATA_SIZE, fin);
+    covered = edc_compute(covered, s1 + OFFSET_MODE2_SUBHEADER, SECTOR_SIZE_MODE2);
+    fixture_write_type_count(fin, SECTOR_TYPE_MODE2_FORM2, 1);
+    fwrite(s2 + OFFSET_MODE2_SUBHEADER + MODE2_SUBHEADER_SIZE, 1, MODE2_FORM2_DATA_SIZE, fin);
+    covered = edc_compute(covered, s2 + OFFSET_MODE2_SUBHEADER, SECTOR_SIZE_MODE2);
+    fixture_write_type_count(fin, 0, 0);
+    edc_write_bytes(covered, edc);
+    fwrite(edc, 1, EDC_SIZE, fin);
+    rewind(fin);
+
+    decode_stats_t stats = {false, false};
+    ASSERT_EQ(0, unecmify(fin, fout, &stats, false, false, true));
+    ASSERT_TRUE(stats.saw_mode2);
+
+    fseek(fout, 0, SEEK_END);
+    ASSERT_EQ_MSG(3 * SECTOR_SIZE_RAW, ftell(fout), "every sector must expand to 2352 bytes");
+    rewind(fout);
+    uint8_t decoded[3 * SECTOR_SIZE_RAW];
+    ASSERT_EQ(1, fread(decoded, sizeof(decoded), 1, fout));
+    ASSERT_MEM_EQ(image, decoded, sizeof(image));
+
+    /* Without the option the same stream yields the header-less 2336-byte bodies */
+    rewind(fin);
+    FILE *fplain = test_tmpfile();
+    ASSERT_TRUE(fplain != nullptr);
+    ASSERT_EQ(0, unecmify(fin, fplain, nullptr, false, false, false));
+    fseek(fplain, 0, SEEK_END);
+    ASSERT_EQ(SECTOR_SIZE_RAW + 2 * SECTOR_SIZE_MODE2, ftell(fplain));
+
+    fclose(fplain);
+    fclose(fin);
+    fclose(fout);
     PASS();
 }
 
@@ -777,6 +886,8 @@ int main(int argc, char **argv) {
     test_mode2_record_expands_to_2336();
     test_mode2_form1_stream_roundtrips_raw_sector();
     test_mode2_form2_stream_roundtrips_raw_sector();
+    test_regenerate_mode2_header_addresses();
+    test_mode2_2352_restores_legacy_archive();
 
     TEST_CATEGORY("\nOutput Safety Tests");
     test_output_finish_reports_flush_failure();

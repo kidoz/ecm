@@ -139,6 +139,29 @@ static int decode_mode1_sector(FILE *in, FILE *out, uint8_t *sector, uint32_t *c
     return 0;
 }
 
+/* Convert a binary value (0-99) to packed BCD */
+static uint8_t to_bcd(uint8_t value) {
+    return (uint8_t)(((value / 10) << 4) | (value % 10));
+}
+
+/*
+ * Write the 16-byte sync + header that versions 1.2.0 to 1.3.1 regenerated for every Mode 2
+ * record: sync pattern, the MSF address of the sector number that the output position
+ * implies (counting from 00:02:00, the standard 150-frame pregap), and mode byte 2.
+ * The sector number counts every output byte, literal runs included, exactly as those
+ * versions did, so their archives decode back to the same image.
+ */
+static void regenerate_mode2_header(uint8_t *sector, int64_t outbytes) {
+    uint32_t frame = (uint32_t)(outbytes / SECTOR_SIZE_RAW) + 150;
+
+    sector_init_sync(sector);
+    sector[OFFSET_HEADER + 2] = to_bcd((uint8_t)(frame % 75));
+    frame /= 75;
+    sector[OFFSET_HEADER + 1] = to_bcd((uint8_t)(frame % 60));
+    sector[OFFSET_HEADER + 0] = to_bcd((uint8_t)(frame / 60));
+    sector[OFFSET_MODE] = 0x02;
+}
+
 /*
  * Decode a Mode 2 Form 1 or Form 2 record into the 2336-byte body that follows sync +
  * header in a raw sector.
@@ -147,11 +170,18 @@ static int decode_mode1_sector(FILE *in, FILE *out, uint8_t *sector, uint32_t *c
  * literal run in front of the record, so emitting them here would duplicate them and
  * corrupt spec-conformant streams. The address is zeroed for Mode 2 ECC anyway, so the
  * header area of the scratch buffer only needs to be deterministic, not meaningful.
+ *
+ * With mode2_2352 the record instead expands to a full 2352-byte sector with a regenerated
+ * header, which is what versions 1.2.0 to 1.3.1 wrote. Only archives made by those versions
+ * from raw Mode 2 images need this; their encoder dropped the header instead of storing it.
+ * The trailing EDC covers the 2336-byte body either way, as those versions computed it.
  */
 static int decode_mode2_sector(FILE *in, FILE *out, uint8_t *sector, uint32_t *checkedc,
-                               sector_type_t type) {
+                               sector_type_t type, bool mode2_2352, int64_t outbytes) {
     size_t payload =
         type == SECTOR_TYPE_MODE2_FORM1 ? MODE2_FORM1_DATA_SIZE : MODE2_FORM2_DATA_SIZE;
+    const uint8_t *emit = mode2_2352 ? sector : sector + OFFSET_MODE2_SUBHEADER;
+    size_t emit_len = mode2_2352 ? SECTOR_SIZE_RAW : SECTOR_SIZE_MODE2;
 
     memset(sector, 0, SECTOR_SIZE_RAW);
     if (fread(sector + OFFSET_MODE2_SUBHEADER + MODE2_SUBHEADER_SIZE, 1, payload, in) != payload) {
@@ -159,8 +189,11 @@ static int decode_mode2_sector(FILE *in, FILE *out, uint8_t *sector, uint32_t *c
     }
     sector_copy_subheader(sector);
     eccedc_generate(sector, type);
+    if (mode2_2352) {
+        regenerate_mode2_header(sector, outbytes);
+    }
     *checkedc = edc_compute(*checkedc, sector + OFFSET_MODE2_SUBHEADER, SECTOR_SIZE_MODE2);
-    if (fwrite(sector + OFFSET_MODE2_SUBHEADER, SECTOR_SIZE_MODE2, 1, out) != 1) {
+    if (fwrite(emit, emit_len, 1, out) != 1) {
         fprintf(stderr, "Error: failed to write output\n");
         return -2;
     }
@@ -170,11 +203,13 @@ static int decode_mode2_sector(FILE *in, FILE *out, uint8_t *sector, uint32_t *c
 /*
  * Main decoding function
  */
-static int unecmify(FILE *in, FILE *out, decode_stats_t *stats, bool is_stdin, bool verbose) {
+static int unecmify(FILE *in, FILE *out, decode_stats_t *stats, bool is_stdin, bool verbose,
+                    bool mode2_2352) {
     static const char *type_names[] = {"literal", "mode1", "mode2f1", "mode2f2"};
     uint32_t checkedc = 0;
     uint8_t sector[SECTOR_SIZE_RAW];
     progress_t progress;
+    int64_t outbytes = 0;
 
     /* For regular files, get size for progress tracking; for stdin, skip */
     if (!is_stdin) {
@@ -200,6 +235,10 @@ static int unecmify(FILE *in, FILE *out, decode_stats_t *stats, bool is_stdin, b
         goto corrupt;
     }
 
+    if (mode2_2352) {
+        ECM_VERBOSE(verbose, "Regenerating sync + header for Mode 2 records (1.2.0-1.3.1 layout)");
+    }
+
     for (;;) {
         unsigned type, num;
         if (!read_type_count(in, &type, &num)) {
@@ -223,6 +262,7 @@ static int unecmify(FILE *in, FILE *out, decode_stats_t *stats, bool is_stdin, b
                     fprintf(stderr, "Error: failed to write output\n");
                     goto writeerr;
                 }
+                outbytes += b;
                 num -= b;
                 off_t pos = ftello(in);
                 if (pos >= 0)
@@ -238,12 +278,17 @@ static int unecmify(FILE *in, FILE *out, decode_stats_t *stats, bool is_stdin, b
                     if (stats)
                         stats->saw_mode1 = true;
                     ret = decode_mode1_sector(in, out, sector, &checkedc);
+                    if (ret == 0)
+                        outbytes += SECTOR_SIZE_RAW;
                     break;
                 case SECTOR_TYPE_MODE2_FORM1:
                 case SECTOR_TYPE_MODE2_FORM2:
                     if (stats)
                         stats->saw_mode2 = true;
-                    ret = decode_mode2_sector(in, out, sector, &checkedc, (sector_type_t)type);
+                    ret = decode_mode2_sector(in, out, sector, &checkedc, (sector_type_t)type,
+                                              mode2_2352, outbytes);
+                    if (ret == 0)
+                        outbytes += mode2_2352 ? SECTOR_SIZE_RAW : SECTOR_SIZE_MODE2;
                     break;
                 default:
                     fprintf(stderr, "Error: invalid sector type %u\n", type);
@@ -348,6 +393,14 @@ static bool is_stdio(const char *filename) {
     return filename[0] == '-' && filename[1] == '\0';
 }
 
+static void usage(const char *prog) {
+    fprintf(stderr, "usage: %s [-v|--verbose] [--cue] [--mode2-2352] ecmfile [outputfile]\n", prog);
+    fprintf(stderr, "       use '-' for stdin/stdout\n");
+    fprintf(stderr, "       --mode2-2352  expand Mode 2 records to 2352-byte sectors with\n");
+    fprintf(stderr,
+            "                     regenerated headers (archives from versions 1.2.0-1.3.1)\n");
+}
+
 int main(int argc, char **argv) {
     FILE *fin = nullptr;
     FILE *fout = nullptr;
@@ -356,6 +409,7 @@ int main(int argc, char **argv) {
     bool outfilename_allocated = false;
     bool createcue = false;
     bool verbose = false;
+    bool mode2_2352 = false;
     int result = 0;
     int argoffset = 0;
     decode_stats_t stats = {false, false};
@@ -363,26 +417,27 @@ int main(int argc, char **argv) {
     banner();
     eccedc_init();
 
-    if (argc < 2 || argc > 5) {
-        fprintf(stderr, "usage: %s [-v|--verbose] [--cue] ecmfile [outputfile]\n", argv[0]);
-        fprintf(stderr, "       use '-' for stdin/stdout\n");
-        return 1;
+    /* Options may appear in any order ahead of the file names; a lone '-' is a file name */
+    for (argoffset = 0; argc >= 2 + argoffset; argoffset++) {
+        const char *arg = argv[1 + argoffset];
+        if (arg[0] != '-' || arg[1] == '\0') {
+            break;
+        }
+        if (strcmp(arg, "-v") == 0 || strcmp(arg, "--verbose") == 0) {
+            verbose = true;
+        } else if (strcasecmp(arg, "--cue") == 0) {
+            createcue = true;
+        } else if (strcasecmp(arg, "--mode2-2352") == 0) {
+            mode2_2352 = true;
+        } else {
+            fprintf(stderr, "unknown option: %s\n", arg);
+            usage(argv[0]);
+            return 1;
+        }
     }
 
-    /* Check for -v/--verbose option */
-    if (argc >= 2 && (strcmp(argv[1], "-v") == 0 || strcmp(argv[1], "--verbose") == 0)) {
-        verbose = true;
-        argoffset = 1;
-    }
-
-    /* Check for --cue option */
-    if (argc >= 2 + argoffset && strcasecmp(argv[1 + argoffset], "--cue") == 0) {
-        createcue = true;
-        argoffset++;
-    }
-
-    if (argc < 2 + argoffset) {
-        fprintf(stderr, "usage: %s [-v|--verbose] [--cue] ecmfile [outputfile]\n", argv[0]);
+    if (argc < 2 + argoffset || argc > 3 + argoffset) {
+        usage(argv[0]);
         return 1;
     }
 
@@ -461,7 +516,7 @@ int main(int argc, char **argv) {
         }
     }
 
-    result = unecmify(fin, fout, &stats, is_stdio(infilename), verbose);
+    result = unecmify(fin, fout, &stats, is_stdio(infilename), verbose, mode2_2352);
 
     /* Finish the BIN before writing a CUE so a truncated image never gets a sheet */
     if (output_finish(fout, is_stdio(outfilename) ? "stdout" : outfilename) != 0 && result == 0) {

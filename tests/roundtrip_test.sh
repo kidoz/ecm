@@ -619,6 +619,39 @@ else
     echo "PASS: Unreadable stdin rejected"
 fi
 
+# Test 16: --mode2-2352 restores an archive written by versions 1.2.0 to 1.3.1.
+# Those versions stored raw Mode 2 sectors as header-less records and regenerated sequential
+# addresses from 00:02:00 on decode, so a header-less stream of an image whose addresses are
+# sequential must come back byte for byte with the option, and as 2336-byte bodies without.
 echo ""
-echo "=== All roundtrip tests passed (15/15) ==="
+echo "--- Test 16: Legacy archive restored with --mode2-2352 ---"
+LEGACY_RAW="$TEST_DIR/legacy.bin"
+generate_sectors mode2f1 3 "$LEGACY_RAW" 0                   # 00:02:00 .. 00:02:02
+generate_sectors mode2f2 2 "$TEST_DIR/legacy_f2.bin" 3       # 00:02:03 .. 00:02:04
+cat "$TEST_DIR/legacy_f2.bin" >> "$LEGACY_RAW"
+build_spec_ecm headerless "$LEGACY_RAW" "$TEST_DIR/legacy.ecm"
+
+ORIGINAL_SUM=$(sha256sum "$LEGACY_RAW" | cut -d' ' -f1)
+"$UNECM_BIN" --mode2-2352 "$TEST_DIR/legacy.ecm" "$TEST_DIR/legacy_restored.bin" 2>&1 || true
+DECODED_SUM=$(sha256sum "$TEST_DIR/legacy_restored.bin" | cut -d' ' -f1)
+if [ "$ORIGINAL_SUM" != "$DECODED_SUM" ]; then
+    echo "FAIL: --mode2-2352 did not restore the raw image"
+    echo "  Original: $ORIGINAL_SUM"
+    echo "  Decoded:  $DECODED_SUM ($(wc -c < "$TEST_DIR/legacy_restored.bin" | tr -d ' ') bytes)"
+    exit 1
+fi
+# Options may be combined in any order with the others
+"$UNECM_BIN" --cue --mode2-2352 -v "$TEST_DIR/legacy.ecm" "$TEST_DIR/legacy_cue.bin" > /dev/null 2>&1 || true
+if [ ! -f "$TEST_DIR/legacy_cue.bin.cue" ] || ! grep -q "MODE2/2352" "$TEST_DIR/legacy_cue.bin.cue"; then
+    echo "FAIL: --mode2-2352 combined with --cue and -v did not produce a MODE2/2352 cue sheet"
+    exit 1
+fi
+if "$UNECM_BIN" --no-such-option "$TEST_DIR/legacy.ecm" "$TEST_DIR/legacy_bad.bin" > /dev/null 2>&1; then
+    echo "FAIL: unecm accepted an unknown option"
+    exit 1
+fi
+echo "PASS: Legacy archive restored with --mode2-2352"
+
+echo ""
+echo "=== All roundtrip tests passed (16/16) ==="
 exit 0

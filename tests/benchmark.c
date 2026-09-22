@@ -457,7 +457,7 @@ static void benchmark_decode(void) {
 
     bench_timer_t timer;
     timer_start(&timer);
-    result = unecmify(fenc, fout, nullptr, false, false);
+    result = unecmify(fenc, fout, nullptr, false, false, false);
     timer_stop(&timer);
 
     if (result != 0) {
