@@ -55,6 +55,30 @@ just test       # Run tests
 just benchmark  # Run performance benchmarks
 ```
 
+#### Windows
+
+Native files under `native/` configure a static-CRT release build, so the resulting
+`ecm.exe` and `unecm.exe` need no VC++ redistributable.
+
+With the Visual Studio compiler, from a *Developer Command Prompt for VS* (or after
+running `vcvars64.bat`):
+
+```bat
+meson setup build --native-file native/windows-msvc.ini
+meson compile -C build
+```
+
+With clang (LLVM for Windows):
+
+```bat
+meson setup build --native-file native/windows-clang.ini
+meson compile -C build
+```
+
+The equivalent `just` recipes are `just build-windows` (MSVC) and `just build-windows-clang`.
+MSVC has no `nullptr` keyword in C mode yet, so the MSVC native file selects `/std:clatest`
+and maps `nullptr` to `NULL`.
+
 ### Homebrew (macOS)
 
 From a checkout of this repository, enable Homebrew developer mode to install the local
