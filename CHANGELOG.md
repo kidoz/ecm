@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **`unecm --mode2-2352`** - Expands Mode 2 records to 2352-byte sectors with regenerated
+  sync, address and mode, the way versions 1.2.0 to 1.3.1 decoded them. Archives those
+  versions made from raw Mode 2 images decode back to the original image again, provided
+  the addresses were sequential from 00:02:00, which is all those versions could reproduce.
+  Options to `unecm` may now be given in any order; an unknown option is an error
+
 ## [1.3.2] - 2026-09-22
 
 ### Fixed
