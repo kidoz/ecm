@@ -120,18 +120,20 @@ Restore the original CD image:
 unecm game.bin.ecm              # Creates game.bin
 unecm --cue game.bin.ecm        # Also creates game.bin.cue
 unecm game.bin.ecm restored.bin # Custom output name
+unecm --mode2-2352 old.bin.ecm  # Archive made by ecm 1.2.0-1.3.1 from a raw Mode 2 image
 ```
 
 **Full syntax:**
 
 ```bash
-unecm [-v|--verbose] [--cue] <input.ecm> [output]
+unecm [-v|--verbose] [--cue] [--mode2-2352] <input.ecm> [output]
 ```
 
 | Option | Description |
 |--------|-------------|
 | `-v`, `--verbose` | Show record decoding details |
 | `--cue` | Generate a CUE sheet file |
+| `--mode2-2352` | Expand Mode 2 records to 2352-byte sectors with regenerated sync, address and mode, as versions 1.2.0 to 1.3.1 did. Use it only for archives those versions made from raw Mode 2 images; see [doc/FORMAT.md](doc/FORMAT.md) |
 | `input.ecm` | ECM file (must end in `.ecm`) or `-` for stdin |
 | `output` | Output file (defaults to input without `.ecm`) or `-` for stdout |
 

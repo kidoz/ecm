@@ -200,6 +200,19 @@ produced still decode, but as the format specifies: each Mode 2 record yields 23
 the output is a MODE2/2336 image rather than a 2352-byte image with invented headers. The
 original addresses were never stored, so no decoder can recover them.
 
+`unecm --mode2-2352` reproduces what those versions wrote: every Mode 2 record expands to a
+2352-byte sector whose sync, address and mode are regenerated, with the address counted from
+00:02:00 over all output bytes, literal runs included. For an image whose addresses were
+sequential (the common case for a single-track disc) this restores the raw image byte for
+byte. The option is only meant for such archives; a stream in the layout above already
+carries its headers as literals, and expanding its records would duplicate them.
+
+A file written by those versions cannot be told apart from a spec-conformant file describing
+a MODE2/2336 image, so the option is never applied automatically. Conversely, files written
+by 1.3.2 or later (or by the original `ecm`) from raw Mode 2 images do not decode correctly
+with 1.2.0 to 1.3.1: those decoders add a header that the stream already stores, producing
+16 extra bytes per sector. Version 1.1.0 and the original `unecm` decode them correctly.
+
 ## Contact
 
 - **Email:** corlett@lfx.org
