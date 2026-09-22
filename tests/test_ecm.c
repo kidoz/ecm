@@ -99,7 +99,7 @@ void test_write_type_count(void) {
     TEST(write_type_count);
 
     /* Create a temporary file for testing */
-    FILE *f = tmpfile();
+    FILE *f = test_tmpfile();
     ASSERT_TRUE(f != nullptr);
 
     /* Write type 1, count 1 */
@@ -119,7 +119,7 @@ void test_write_type_count(void) {
     fclose(f);
 
     /* Test larger count */
-    f = tmpfile();
+    f = test_tmpfile();
     ASSERT_TRUE(f != nullptr);
 
     /* Write type 2, count 33 (requires continuation byte) */
@@ -387,7 +387,7 @@ void test_check_type_subheader_mismatch(void) {
 void test_write_type_count_large(void) {
     TEST(write_type_count_large);
 
-    FILE *f = tmpfile();
+    FILE *f = test_tmpfile();
     ASSERT_TRUE(f != nullptr);
 
     /* Test with maximum useful count (close to 0xFFFFFFFF - 1) */
@@ -425,7 +425,7 @@ void test_write_type_count_large(void) {
 void test_write_type_count_returns_int(void) {
     TEST(write_type_count_returns_int);
 
-    FILE *f = tmpfile();
+    FILE *f = test_tmpfile();
     ASSERT_TRUE(f != nullptr);
 
     /* Successful writes should return 0 */
@@ -454,8 +454,8 @@ void test_literal_run_coalesced(void) {
         data[i] = (uint8_t)(i * 13 + 7);
     }
 
-    FILE *fin = tmpfile();
-    FILE *fout = tmpfile();
+    FILE *fin = test_tmpfile();
+    FILE *fout = test_tmpfile();
     ASSERT_TRUE(fin != nullptr && fout != nullptr);
 
     ASSERT_EQ(1, fwrite(data, sizeof(data), 1, fin));
@@ -584,8 +584,8 @@ void test_literal_encoding_batching(void) {
     eccedc_init();
 
     /* Create input with 1000 bytes of literal (non-sector) data */
-    FILE *fin = tmpfile();
-    FILE *fout = tmpfile();
+    FILE *fin = test_tmpfile();
+    FILE *fout = test_tmpfile();
     ASSERT_TRUE(fin != nullptr);
     ASSERT_TRUE(fout != nullptr);
 
@@ -732,8 +732,8 @@ void test_mode2_header_kept_as_literal_batch(void) {
     uint8_t sector[SECTOR_SIZE_RAW];
     fixture_mode2_sector(sector, SECTOR_TYPE_MODE2_FORM1, msf, 7);
 
-    FILE *fin = tmpfile();
-    FILE *fout = tmpfile();
+    FILE *fin = test_tmpfile();
+    FILE *fout = test_tmpfile();
     ASSERT_TRUE(fin != nullptr && fout != nullptr);
     ASSERT_EQ(1, fwrite(sector, SECTOR_SIZE_RAW, 1, fin));
     rewind(fin);
@@ -758,8 +758,8 @@ void test_mode2_header_kept_as_literal_streaming(void) {
     uint8_t sector[SECTOR_SIZE_RAW];
     fixture_mode2_sector(sector, SECTOR_TYPE_MODE2_FORM2, msf, 11);
 
-    FILE *fin = tmpfile();
-    FILE *fout = tmpfile();
+    FILE *fin = test_tmpfile();
+    FILE *fout = test_tmpfile();
     ASSERT_TRUE(fin != nullptr && fout != nullptr);
     ASSERT_EQ(1, fwrite(sector, SECTOR_SIZE_RAW, 1, fin));
     rewind(fin);
@@ -788,8 +788,8 @@ void test_mode2_run_alternates_literal_and_record(void) {
                              (uint8_t)(3 + i));
     }
 
-    FILE *fin = tmpfile();
-    FILE *fout = tmpfile();
+    FILE *fin = test_tmpfile();
+    FILE *fout = test_tmpfile();
     ASSERT_TRUE(fin != nullptr && fout != nullptr);
     ASSERT_EQ(1, fwrite(sectors, sizeof(sectors), 1, fin));
     rewind(fin);
@@ -812,20 +812,47 @@ void test_streaming_rejects_read_error(void) {
 
     eccedc_init();
 
-    FILE *fin = fopen(".", "rb");
-    if (fin == nullptr) {
-        /* Platforms that refuse to open a directory cannot produce this failure mode */
-        printf("SKIP (cannot open a directory as a stream) ... ");
-        PASS();
-        return;
-    }
-    FILE *fout = tmpfile();
+    /* A write-only stream fails every read with the error flag set, on every platform */
+    const char *path = "test_unreadable_in.bin";
+    FILE *fin = fopen(path, "wb");
+    ASSERT_TRUE(fin != nullptr);
+    FILE *fout = test_tmpfile();
     ASSERT_TRUE(fout != nullptr);
 
     ASSERT_EQ(1, ecmify_streaming(fin, fout, false));
+    ASSERT_TRUE(ferror(fin) != 0);
 
     fclose(fin);
     fclose(fout);
+    remove(path);
+    PASS();
+}
+
+/*
+ * Test: stream_set_binary() stops the CRT translating bytes on a text-mode stream.
+ * Only Windows opens streams in text mode, but the check holds everywhere.
+ */
+void test_stream_set_binary(void) {
+    TEST(stream_set_binary);
+
+    const char *path = "test_binary_mode.bin";
+    FILE *f = fopen(path, "w"); /* text mode where the platform distinguishes */
+    ASSERT_TRUE(f != nullptr);
+    ASSERT_TRUE(stream_set_binary(f));
+    ASSERT_EQ('\n', fputc('\n', f));
+    ASSERT_EQ(0x1A, fputc(0x1A, f));
+    fclose(f);
+
+    f = fopen(path, "rb");
+    ASSERT_TRUE(f != nullptr);
+    uint8_t buf[4];
+    size_t n = fread(buf, 1, sizeof(buf), f);
+    fclose(f);
+    remove(path);
+
+    ASSERT_EQ(2, n);
+    ASSERT_EQ('\n', buf[0]);
+    ASSERT_EQ(0x1A, buf[1]);
     PASS();
 }
 
@@ -916,6 +943,7 @@ int main(int argc, char **argv) {
     TEST_CATEGORY("\nI/O Safety Tests");
     test_streaming_rejects_read_error();
     test_file_is_same_as_path();
+    test_stream_set_binary();
 
     TEST_SUITE_END();
 }

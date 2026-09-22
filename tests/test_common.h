@@ -11,6 +11,7 @@
 #include <string.h>
 
 #include "eccedc.h"
+#include "test_tmpfile.h"
 
 /* Test counters - must be defined in each test file */
 static int tests_run = 0;

@@ -61,11 +61,11 @@ wipe:
 
 # Format source files (requires clang-format)
 fmt:
-    clang-format -i src/*.c include/*.h tests/*.c
+    clang-format -i src/*.c include/*.h tests/*.c tests/*.h
 
 # Check formatting without modifying
 fmt-check:
-    clang-format --dry-run --Werror src/*.c include/*.h tests/*.c
+    clang-format --dry-run --Werror src/*.c include/*.h tests/*.c tests/*.h
 
 # Run clang static analyzer
 analyze:

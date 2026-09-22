@@ -29,11 +29,17 @@ test('unit_unecm', test_unecm_exe)
 # Register benchmark (use 'meson test -C build perf_benchmark' or 'just benchmark')
 test('perf_benchmark', benchmark_exe, is_parallel: false, timeout: 120)
 
-# Integration tests (roundtrip)
-roundtrip_test = find_program('roundtrip_test.sh')
+# Integration tests (roundtrip). Invoke bash explicitly with forward-slash paths: on
+# Windows, find_program() would hand bash a backslashed script path it cannot open.
+fs = import('fs')
+bash = find_program('bash')
 test(
   'integration_roundtrip',
-  roundtrip_test,
-  args: [ecm_exe.full_path(), unecm_exe.full_path()],
+  bash,
+  args: [
+    fs.as_posix(meson.current_source_dir() / 'roundtrip_test.sh'),
+    fs.as_posix(ecm_exe.full_path()),
+    fs.as_posix(unecm_exe.full_path()),
+  ],
   depends: [ecm_exe, unecm_exe],
 )

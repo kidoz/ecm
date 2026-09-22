@@ -11,6 +11,7 @@
 #include "eccedc.h"
 
 #if defined(_WIN32) || defined(_WIN64)
+#include <fcntl.h>
 #include <io.h>
 #define close  _close
 #define fileno _fileno
@@ -364,8 +365,8 @@ void test_unecmify_bad_magic(void) {
     eccedc_init();
 
     /* Create ECM file with wrong magic */
-    FILE *fin = tmpfile();
-    FILE *fout = tmpfile();
+    FILE *fin = test_tmpfile();
+    FILE *fout = test_tmpfile();
     ASSERT_TRUE(fin != nullptr);
     ASSERT_TRUE(fout != nullptr);
 
@@ -395,8 +396,8 @@ void test_unecmify_truncated_header(void) {
     eccedc_init();
 
     /* Create ECM file with truncated header */
-    FILE *fin = tmpfile();
-    FILE *fout = tmpfile();
+    FILE *fin = test_tmpfile();
+    FILE *fout = test_tmpfile();
     ASSERT_TRUE(fin != nullptr);
     ASSERT_TRUE(fout != nullptr);
 
@@ -423,8 +424,8 @@ void test_unecmify_bad_checksum(void) {
 
     eccedc_init();
 
-    FILE *fin = tmpfile();
-    FILE *fout = tmpfile();
+    FILE *fin = test_tmpfile();
+    FILE *fout = test_tmpfile();
     ASSERT_TRUE(fin != nullptr);
     ASSERT_TRUE(fout != nullptr);
 
@@ -475,8 +476,8 @@ void test_unecmify_empty_data(void) {
 
     eccedc_init();
 
-    FILE *fin = tmpfile();
-    FILE *fout = tmpfile();
+    FILE *fin = test_tmpfile();
+    FILE *fout = test_tmpfile();
     ASSERT_TRUE(fin != nullptr);
     ASSERT_TRUE(fout != nullptr);
 
@@ -522,8 +523,8 @@ void test_unecmify_truncated_type_count(void) {
 
     eccedc_init();
 
-    FILE *fin = tmpfile();
-    FILE *fout = tmpfile();
+    FILE *fin = test_tmpfile();
+    FILE *fout = test_tmpfile();
     ASSERT_TRUE(fin != nullptr);
     ASSERT_TRUE(fout != nullptr);
 
@@ -601,8 +602,8 @@ void test_mode2_record_expands_to_2336(void) {
     uint8_t sector[SECTOR_SIZE_RAW];
     fixture_mode2_sector(sector, SECTOR_TYPE_MODE2_FORM1, msf, 5);
 
-    FILE *fin = tmpfile();
-    FILE *fout = tmpfile();
+    FILE *fin = test_tmpfile();
+    FILE *fout = test_tmpfile();
     ASSERT_TRUE(fin != nullptr && fout != nullptr);
     write_mode2_stream(fin, sector, SECTOR_TYPE_MODE2_FORM1, false);
 
@@ -626,8 +627,8 @@ void test_mode2_record_expands_to_2336(void) {
  * Decode a literal-header + record stream and require the exact raw sector back.
  */
 static bool roundtrips_raw_sector(const uint8_t *sector, sector_type_t form) {
-    FILE *fin = tmpfile();
-    FILE *fout = tmpfile();
+    FILE *fin = test_tmpfile();
+    FILE *fout = test_tmpfile();
     uint8_t decoded[SECTOR_SIZE_RAW];
     bool ok = false;
 
@@ -702,10 +703,22 @@ void test_mode2_form2_stream_roundtrips_raw_sector(void) {
 void test_output_finish_reports_flush_failure(void) {
     TEST(output_finish_reports_flush_failure);
 
-    FILE *f = tmpfile();
+#if defined(_WIN32) || defined(_WIN64)
+    /* Closing the descriptor under a live stream makes the Windows CRT fail fast, so write
+     * into a pipe whose read end is gone: the deferred write then fails with EPIPE */
+    int fds[2];
+    ASSERT_EQ(0, _pipe(fds, 4096, _O_BINARY));
+    ASSERT_EQ(0, _close(fds[0]));
+    FILE *f = _fdopen(fds[1], "wb");
+    ASSERT_TRUE(f != nullptr);
+    ASSERT_EQ('x', fputc('x', f)); /* buffered, not yet written */
+#else
+    /* Close the descriptor under the stream so the deferred write fails with EBADF */
+    FILE *f = test_tmpfile();
     ASSERT_TRUE(f != nullptr);
     ASSERT_EQ('x', fputc('x', f)); /* buffered, not yet written */
     ASSERT_EQ(0, close(fileno(f)));
+#endif
 
     ASSERT_EQ(-1, output_finish(f, "tmpfile"));
     PASS();
@@ -717,7 +730,7 @@ void test_output_finish_reports_flush_failure(void) {
 void test_output_finish_succeeds(void) {
     TEST(output_finish_succeeds);
 
-    FILE *f = tmpfile();
+    FILE *f = test_tmpfile();
     ASSERT_TRUE(f != nullptr);
     ASSERT_EQ('x', fputc('x', f));
 

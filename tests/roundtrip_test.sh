@@ -7,6 +7,10 @@ set -e
 ECM_BIN="${1:-./build/ecm}"
 UNECM_BIN="${2:-./build/unecm}"
 TEST_DIR=$(mktemp -d)
+# Native tools (python3 on Windows) cannot open MSYS-style /tmp paths; use a mixed path
+if command -v cygpath >/dev/null 2>&1; then
+    TEST_DIR=$(cygpath -m "$TEST_DIR")
+fi
 
 cleanup() {
     rm -rf "$TEST_DIR"
@@ -574,10 +578,15 @@ if "$ECM_BIN" "$SAME_FILE" "$SAME_FILE" > /dev/null 2>&1; then
     echo "FAIL: ecm accepted identical input and output paths"
     exit 1
 fi
-ln -s "same.bin" "$TEST_DIR/same_alias.bin"
-if "$ECM_BIN" "$SAME_FILE" "$TEST_DIR/same_alias.bin" > /dev/null 2>&1; then
-    echo "FAIL: ecm accepted a symlink alias of the input as output"
-    exit 1
+# ln -s silently copies on Windows without symlink privileges; only test a real link
+ln -s "same.bin" "$TEST_DIR/same_alias.bin" 2>/dev/null || true
+if [ -L "$TEST_DIR/same_alias.bin" ]; then
+    if "$ECM_BIN" "$SAME_FILE" "$TEST_DIR/same_alias.bin" > /dev/null 2>&1; then
+        echo "FAIL: ecm accepted a symlink alias of the input as output"
+        exit 1
+    fi
+else
+    echo "SKIP: symlinks unavailable, alias check skipped"
 fi
 SUM_AFTER=$(sha256sum "$SAME_FILE" | cut -d' ' -f1)
 if [ "$SUM_BEFORE" != "$SUM_AFTER" ]; then

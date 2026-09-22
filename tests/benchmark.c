@@ -19,6 +19,7 @@
 #include <time.h>
 
 #include "eccedc.h"
+#include "test_tmpfile.h"
 
 /* Include ecm.c static functions */
 #define main   ecm_main
@@ -322,8 +323,8 @@ static void benchmark_encode(void) {
     /* Create test data: many Mode 1 sectors */
     create_mode1_sector(sector);
 
-    FILE *fin = tmpfile();
-    FILE *fout = tmpfile();
+    FILE *fin = test_tmpfile();
+    FILE *fout = test_tmpfile();
     if (!fin || !fout) {
         printf("  Error: failed to create temp files\n");
         if (fin)
@@ -367,7 +368,7 @@ static void benchmark_encode(void) {
 
     /* Test streaming mode */
     rewind(fin);
-    FILE *fout2 = tmpfile();
+    FILE *fout2 = test_tmpfile();
     if (!fout2) {
         printf("  Error: failed to create temp file\n");
         fclose(fin);
@@ -405,8 +406,8 @@ static void benchmark_decode(void) {
     /* Create encoded data first */
     create_mode1_sector(sector);
 
-    FILE *fin = tmpfile();
-    FILE *fenc = tmpfile();
+    FILE *fin = test_tmpfile();
+    FILE *fenc = test_tmpfile();
     if (!fin || !fenc) {
         printf("  Error: failed to create temp files\n");
         if (fin)
@@ -446,7 +447,7 @@ static void benchmark_decode(void) {
     size_t output_size = (size_t)num_sectors * SECTOR_SIZE_RAW;
 
     /* Decode */
-    FILE *fout = tmpfile();
+    FILE *fout = test_tmpfile();
     if (!fout) {
         printf("  Error: failed to create temp file\n");
         fclose(fin);
