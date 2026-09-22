@@ -57,10 +57,11 @@ just benchmark  # Run performance benchmarks
 
 ### Homebrew (macOS)
 
-The formula lives in this repository rather than in a tap:
+From a checkout of this repository, enable Homebrew developer mode to install the local
+formula:
 
 ```bash
-brew install --formula ./packaging/homebrew/ecm.rb
+HOMEBREW_DEVELOPER=1 brew install --formula ./packaging/homebrew/ecm.rb
 ```
 
 ## Usage

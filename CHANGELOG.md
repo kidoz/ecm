@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.3.2] - 2026-09-22
+
 ### Fixed
 
 - **Mode 2 addresses lost on roundtrip** - Raw Mode 2 sectors are encoded as a 16-byte literal
@@ -33,7 +35,8 @@ All notable changes to this project will be documented in this file.
   sectors, as the original `unecm` would, rather than to 2352-byte sectors with generated
   headers (see `doc/FORMAT.md`, "Files From Versions 1.2.0 to 1.3.1")
 - **Packaging** - PKGBUILD and Homebrew formula point at the 1.3.1 release; the README
-  installs the formula from this repository instead of a non-existent cask
+  installs the formula from this repository with Homebrew developer mode instead of a
+  non-existent cask
 
 ### Development
 
