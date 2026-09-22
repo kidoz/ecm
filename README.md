@@ -57,8 +57,10 @@ just benchmark  # Run performance benchmarks
 
 ### Homebrew (macOS)
 
+The formula lives in this repository rather than in a tap:
+
 ```bash
-brew install --cask ecm
+brew install --formula ./packaging/homebrew/ecm.rb
 ```
 
 ## Usage
