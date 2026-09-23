@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.3.4] - 2026-09-23
+
 ### Fixed
 
 - **Record counts beyond the format limit** - The encoder splits runs so that no record count
