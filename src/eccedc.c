@@ -12,6 +12,7 @@
 #include <windows.h>
 #else
 #include <sys/stat.h>
+#include <unistd.h>
 #endif
 
 /*
@@ -67,6 +68,32 @@ void eccedc_init(void) {
         edc = (edc >> 8) ^ edc_lut[(edc ^ (*src++)) & 0xFF];
     }
     return edc;
+}
+
+void edc_window_init(edc_window_t *w, size_t length) {
+    static const uint8_t zeros[256] = {0};
+
+    if (w == nullptr) {
+        return;
+    }
+    eccedc_init();
+    for (uint32_t x = 0; x < 256; x++) {
+        uint8_t byte = (uint8_t)x;
+        uint32_t edc = edc_compute(0, &byte, 1);
+        for (size_t left = length; left > 0;) {
+            size_t n = left < sizeof(zeros) ? left : sizeof(zeros);
+            edc = edc_compute(edc, zeros, n);
+            left -= n;
+        }
+        w->leaving[x] = edc;
+    }
+}
+
+[[nodiscard]] uint32_t edc_window_roll(const edc_window_t *w, uint32_t edc, uint8_t leaving,
+                                       uint8_t entering) {
+    /* Extend the window by the entering byte, then cancel the leaving byte's contribution */
+    edc = (edc >> 8) ^ edc_lut[(edc ^ entering) & 0xFF];
+    return edc ^ w->leaving[leaving];
 }
 
 void edc_compute_block(const uint8_t *src, size_t size, uint8_t *dest) {
@@ -330,6 +357,31 @@ void sector_copy_subheader(uint8_t *sector) {
 }
 #endif
 
+[[nodiscard]] const char *path_basename(const char *path) {
+    if (path == nullptr) {
+        return nullptr;
+    }
+    const char *base = path;
+    for (const char *p = path; *p != '\0'; p++) {
+#if defined(_WIN32) || defined(_WIN64)
+        /* Paths arrive in the ANSI code page; in a double-byte one such as 932 the trail
+         * byte of a character can be 0x5C, which must not be read as a backslash */
+        if (IsDBCSLeadByte((BYTE)*p) && p[1] != '\0') {
+            p++;
+            continue;
+        }
+        if (*p == '/' || *p == '\\' || *p == ':') {
+            base = p + 1;
+        }
+#else
+        if (*p == '/') {
+            base = p + 1;
+        }
+#endif
+    }
+    return base;
+}
+
 [[nodiscard]] bool stream_set_binary(FILE *f) {
     if (f == nullptr) {
         return false;
@@ -340,6 +392,30 @@ void sector_copy_subheader(uint8_t *sector) {
     return _setmode(_fileno(f), _O_BINARY) != -1;
 #else
     return true;
+#endif
+}
+
+[[nodiscard]] bool stream_is_terminal(FILE *f) {
+    if (f == nullptr) {
+        return false;
+    }
+#if defined(_WIN32) || defined(_WIN64)
+    return _isatty(_fileno(f)) != 0;
+#else
+    return isatty(fileno(f)) != 0;
+#endif
+}
+
+[[nodiscard]] bool stream_is_regular_file(FILE *f) {
+    if (f == nullptr) {
+        return false;
+    }
+#if defined(_WIN32) || defined(_WIN64)
+    HANDLE h = (HANDLE)_get_osfhandle(_fileno(f));
+    return h != INVALID_HANDLE_VALUE && GetFileType(h) == FILE_TYPE_DISK;
+#else
+    struct stat st;
+    return fstat(fileno(f), &st) == 0 && S_ISREG(st.st_mode);
 #endif
 }
 

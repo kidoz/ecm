@@ -147,6 +147,21 @@ static inline void fixture_mode2_sector(uint8_t *sector, sector_type_t form, con
     eccedc_generate(sector, form);
 }
 
+/*
+ * Build a valid raw 2352-byte Mode 1 sector carrying the given BCD MSF address. seed varies
+ * the user data between sectors. Requires eccedc_init().
+ */
+static inline void fixture_mode1_sector(uint8_t *sector, const uint8_t msf[3], uint8_t seed) {
+    memset(sector, 0, SECTOR_SIZE_RAW);
+    fixture_sync(sector);
+    memcpy(sector + OFFSET_HEADER, msf, MODE1_ADDRESS_SIZE);
+    sector[OFFSET_MODE] = 0x01;
+    for (size_t i = 0; i < SECTOR_USER_DATA; i++) {
+        sector[OFFSET_MODE1_DATA + i] = (uint8_t)((i * seed + 1) & 0xFF);
+    }
+    eccedc_generate(sector, SECTOR_TYPE_MODE1);
+}
+
 /* Write a type/count record header exactly as ecm does; count 0 with type 0 is the end marker */
 static inline void fixture_write_type_count(FILE *f, unsigned type, unsigned count) {
     count--;

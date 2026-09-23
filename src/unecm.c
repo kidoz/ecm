@@ -34,15 +34,17 @@ static void banner(void) {
 typedef struct {
     int64_t current;
     int64_t total;
+    bool show; /* only a terminal gets the self-overwriting progress line */
 } progress_t;
 
 static void progress_reset(progress_t *p, int64_t total) {
     p->current = 0;
     p->total = total;
+    p->show = stream_is_terminal(stderr);
 }
 
 static void progress_update(progress_t *p, int64_t n) {
-    if ((n >> 20) != (p->current >> 20)) {
+    if (p->show && (n >> 20) != (p->current >> 20)) {
         int64_t d = (p->total + 64) / 128;
         if (!d)
             d = 1;
@@ -52,12 +54,41 @@ static void progress_update(progress_t *p, int64_t n) {
 }
 
 /*
- * Decode statistics for CUE file generation
+ * Decode statistics for CUE file generation. A Mode 2 record completes a raw 2352-byte sector
+ * when the 16 bytes written just before it are a sync pattern and header, or when
+ * --mode2-2352 regenerates them; otherwise it leaves a bare 2336-byte body.
  */
 typedef struct {
     bool saw_mode1;
-    bool saw_mode2;
+    bool saw_mode2_raw;
+    bool saw_mode2_bare;
 } decode_stats_t;
+
+/*
+ * The last SECTOR_SYNC_HEADER_SIZE bytes written, used to tell whether a Mode 2 record
+ * follows its own sync and header.
+ */
+typedef struct {
+    uint8_t bytes[SECTOR_SYNC_HEADER_SIZE];
+    int64_t written;
+} output_tail_t;
+
+static void tail_push(output_tail_t *t, const uint8_t *data, size_t len) {
+    if (len >= SECTOR_SYNC_HEADER_SIZE) {
+        memcpy(t->bytes, data + len - SECTOR_SYNC_HEADER_SIZE, SECTOR_SYNC_HEADER_SIZE);
+    } else {
+        memmove(t->bytes, t->bytes + len, SECTOR_SYNC_HEADER_SIZE - len);
+        memcpy(t->bytes + SECTOR_SYNC_HEADER_SIZE - len, data, len);
+    }
+    t->written += (int64_t)len;
+}
+
+static bool tail_is_mode2_header(const output_tail_t *t) {
+    static const uint8_t sync[OFFSET_HEADER] = {0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+                                                0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00};
+    return t->written >= SECTOR_SYNC_HEADER_SIZE && memcmp(t->bytes, sync, sizeof(sync)) == 0 &&
+           t->bytes[OFFSET_MODE] == 0x02;
+}
 
 /*
  * Read and verify magic header
@@ -209,7 +240,7 @@ static int unecmify(FILE *in, FILE *out, decode_stats_t *stats, bool is_stdin, b
     uint32_t checkedc = 0;
     uint8_t sector[SECTOR_SIZE_RAW];
     progress_t progress;
-    int64_t outbytes = 0;
+    output_tail_t tail = {{0}, 0};
 
     /* For regular files, get size for progress tracking; for stdin, skip */
     if (!is_stdin) {
@@ -262,7 +293,7 @@ static int unecmify(FILE *in, FILE *out, decode_stats_t *stats, bool is_stdin, b
                     fprintf(stderr, "Error: failed to write output\n");
                     goto writeerr;
                 }
-                outbytes += b;
+                tail_push(&tail, sector, b);
                 num -= b;
                 off_t pos = ftello(in);
                 if (pos >= 0)
@@ -279,16 +310,22 @@ static int unecmify(FILE *in, FILE *out, decode_stats_t *stats, bool is_stdin, b
                         stats->saw_mode1 = true;
                     ret = decode_mode1_sector(in, out, sector, &checkedc);
                     if (ret == 0)
-                        outbytes += SECTOR_SIZE_RAW;
+                        tail_push(&tail, sector, SECTOR_SIZE_RAW);
                     break;
                 case SECTOR_TYPE_MODE2_FORM1:
                 case SECTOR_TYPE_MODE2_FORM2:
-                    if (stats)
-                        stats->saw_mode2 = true;
+                    if (stats) {
+                        if (mode2_2352 || tail_is_mode2_header(&tail))
+                            stats->saw_mode2_raw = true;
+                        else
+                            stats->saw_mode2_bare = true;
+                    }
                     ret = decode_mode2_sector(in, out, sector, &checkedc, (sector_type_t)type,
-                                              mode2_2352, outbytes);
-                    if (ret == 0)
-                        outbytes += mode2_2352 ? SECTOR_SIZE_RAW : SECTOR_SIZE_MODE2;
+                                              mode2_2352, tail.written);
+                    if (ret == 0 && mode2_2352)
+                        tail_push(&tail, sector, SECTOR_SIZE_RAW);
+                    else if (ret == 0)
+                        tail_push(&tail, sector + OFFSET_MODE2_SUBHEADER, SECTOR_SIZE_MODE2);
                     break;
                 default:
                     fprintf(stderr, "Error: invalid sector type %u\n", type);
@@ -310,10 +347,14 @@ static int unecmify(FILE *in, FILE *out, decode_stats_t *stats, bool is_stdin, b
         goto uneof;
     }
 
-    off_t inpos = ftello(in);
-    off_t outpos = ftello(out);
-    fprintf(stderr, "Decoded %lld bytes -> %lld bytes\n", (long long)(inpos >= 0 ? inpos : 0),
-            (long long)(outpos >= 0 ? outpos : 0));
+    /* A pipe has no meaningful position; the output size is counted as it is written */
+    off_t inpos = stream_is_regular_file(in) ? ftello(in) : -1;
+    if (inpos >= 0) {
+        fprintf(stderr, "Decoded %lld bytes -> %lld bytes\n", (long long)inpos,
+                (long long)tail.written);
+    } else {
+        fprintf(stderr, "Decoded to %lld bytes\n", (long long)tail.written);
+    }
 
     if (sector[0] != ((checkedc >> 0) & 0xFF) || sector[1] != ((checkedc >> 8) & 0xFF) ||
         sector[2] != ((checkedc >> 16) & 0xFF) || sector[3] != ((checkedc >> 24) & 0xFF)) {
@@ -336,17 +377,30 @@ writeerr:
 }
 
 /*
- * Determine track mode string for the CUE sheet
+ * Track mode for the CUE sheet. Raw Mode 2 sectors make a MODE2/2352 image, while bare
+ * 2336-byte bodies with nothing else make MODE2/2336, as in archives of MODE2/2336 images or
+ * 1.2.0-1.3.1 archives decoded without --mode2-2352. An image mixing both sizes has no single
+ * sector size; it keeps MODE2/2352 and write_cue_file() warns.
  */
 static const char *cue_track_mode(const decode_stats_t *stats) {
-    if (stats && !stats->saw_mode2) {
-        return "MODE1/2352";
+    if (stats == nullptr) {
+        return "MODE2/2352";
     }
-    return "MODE2/2352";
+    if (stats->saw_mode2_bare && !stats->saw_mode2_raw && !stats->saw_mode1) {
+        return "MODE2/2336";
+    }
+    if (stats->saw_mode2_raw || stats->saw_mode2_bare) {
+        return "MODE2/2352";
+    }
+    return "MODE1/2352";
 }
 
 /*
- * Write a CUE file for the decoded BIN
+ * Write a CUE file for the decoded BIN.
+ *
+ * The sheet is created next to the image as <output>.cue, and players resolve its FILE entry
+ * relative to the sheet, so the entry names the image by its file name alone. The output
+ * path as typed would point nowhere once it contains a directory.
  */
 static int write_cue_file(const char *outfilename, const decode_stats_t *stats) {
     size_t outlen = strlen(outfilename);
@@ -370,13 +424,18 @@ static int write_cue_file(const char *outfilename, const decode_stats_t *stats) 
         goto cleanup;
     }
 
-    fprintf(cuefile, "FILE \"%s\" BINARY\n", outfilename);
+    fprintf(cuefile, "FILE \"%s\" BINARY\n", path_basename(outfilename));
     fprintf(cuefile, "  TRACK 01 %s\n", cue_track_mode(stats));
     fprintf(cuefile, "    INDEX 01 00:00:00\n");
 
     if (output_finish(cuefile, cuefilename) != 0) {
+        remove(cuefilename);
         result = 1;
         goto cleanup;
+    }
+    if (stats && stats->saw_mode2_bare && (stats->saw_mode2_raw || stats->saw_mode1)) {
+        fprintf(stderr, "Warning: the image mixes 2336-byte Mode 2 bodies with 2352-byte "
+                        "sectors; no single CUE track mode describes it\n");
     }
 
     fprintf(stderr, "Created CUE file: %s\n", cuefilename);
@@ -393,55 +452,73 @@ static bool is_stdio(const char *filename) {
     return filename[0] == '-' && filename[1] == '\0';
 }
 
-static void usage(const char *prog) {
-    fprintf(stderr, "usage: %s [-v|--verbose] [--cue] [--mode2-2352] ecmfile [outputfile]\n", prog);
-    fprintf(stderr, "       use '-' for stdin/stdout\n");
-    fprintf(stderr, "       --mode2-2352  expand Mode 2 records to 2352-byte sectors with\n");
-    fprintf(stderr,
-            "                     regenerated headers (archives from versions 1.2.0-1.3.1)\n");
+static void usage(FILE *f, const char *prog) {
+    fprintf(f, "usage: %s [-v|--verbose] [--cue] [--mode2-2352] ecmfile [outputfile]\n", prog);
+    fprintf(f, "       %s -h|--help | -V|--version\n", prog);
+    fprintf(f, "       use '-' for stdin/stdout, and '--' before file names starting with '-'\n");
+    fprintf(f, "       --mode2-2352  expand Mode 2 records to 2352-byte sectors with\n");
+    fprintf(f, "                     regenerated headers (archives from versions 1.2.0-1.3.1)\n");
 }
 
 int main(int argc, char **argv) {
     FILE *fin = nullptr;
     FILE *fout = nullptr;
+    char *files[2] = {nullptr, nullptr};
+    int nfiles = 0;
+    bool options_done = false;
     const char *infilename;
     char *outfilename = nullptr;
     bool outfilename_allocated = false;
+    bool out_is_file = false;
     bool createcue = false;
     bool verbose = false;
     bool mode2_2352 = false;
     int result = 0;
-    int argoffset = 0;
-    decode_stats_t stats = {false, false};
+    decode_stats_t stats = {false, false, false};
 
-    banner();
-    eccedc_init();
-
-    /* Options may appear in any order ahead of the file names; a lone '-' is a file name */
-    for (argoffset = 0; argc >= 2 + argoffset; argoffset++) {
-        const char *arg = argv[1 + argoffset];
-        if (arg[0] != '-' || arg[1] == '\0') {
-            break;
+    /* Options may appear anywhere; '--' ends them, and a lone '-' is a file name */
+    for (int i = 1; i < argc; i++) {
+        const char *arg = argv[i];
+        if (!options_done && arg[0] == '-' && arg[1] != '\0') {
+            if (strcmp(arg, "--") == 0) {
+                options_done = true;
+            } else if (strcmp(arg, "-v") == 0 || strcmp(arg, "--verbose") == 0) {
+                verbose = true;
+            } else if (strcasecmp(arg, "--cue") == 0) {
+                createcue = true;
+            } else if (strcasecmp(arg, "--mode2-2352") == 0) {
+                mode2_2352 = true;
+            } else if (strcmp(arg, "-h") == 0 || strcmp(arg, "--help") == 0) {
+                usage(stdout, argv[0]);
+                return 0;
+            } else if (strcmp(arg, "-V") == 0 || strcmp(arg, "--version") == 0) {
+                printf("unecm " ECM_VERSION "\n");
+                return 0;
+            } else {
+                banner();
+                fprintf(stderr, "unknown option: %s\n", arg);
+                usage(stderr, argv[0]);
+                return 1;
+            }
+            continue;
         }
-        if (strcmp(arg, "-v") == 0 || strcmp(arg, "--verbose") == 0) {
-            verbose = true;
-        } else if (strcasecmp(arg, "--cue") == 0) {
-            createcue = true;
-        } else if (strcasecmp(arg, "--mode2-2352") == 0) {
-            mode2_2352 = true;
-        } else {
-            fprintf(stderr, "unknown option: %s\n", arg);
-            usage(argv[0]);
+        if (nfiles == 2) {
+            banner();
+            fprintf(stderr, "too many file names: %s\n", arg);
+            usage(stderr, argv[0]);
             return 1;
         }
+        files[nfiles++] = argv[i];
     }
 
-    if (argc < 2 + argoffset || argc > 3 + argoffset) {
-        usage(argv[0]);
+    banner();
+    if (nfiles == 0) {
+        usage(stderr, argv[0]);
         return 1;
     }
+    eccedc_init();
 
-    infilename = argv[1 + argoffset];
+    infilename = files[0];
 
     /* Verify input filename ends with .ecm (unless stdin) */
     if (!is_stdio(infilename)) {
@@ -457,8 +534,8 @@ int main(int argc, char **argv) {
     }
 
     /* Figure out output filename */
-    if (argc == 3 + argoffset) {
-        outfilename = argv[2 + argoffset];
+    if (nfiles == 2) {
+        outfilename = files[1];
     } else if (is_stdio(infilename)) {
         outfilename = "-";
     } else {
@@ -514,6 +591,7 @@ int main(int argc, char **argv) {
             result = 1;
             goto cleanup;
         }
+        out_is_file = stream_is_regular_file(fout);
     }
 
     result = unecmify(fin, fout, &stats, is_stdio(infilename), verbose, mode2_2352);
@@ -523,6 +601,11 @@ int main(int argc, char **argv) {
         result = 1;
     }
     fout = nullptr;
+
+    /* A truncated or unverified image under the requested name would pass for a good one */
+    if (result != 0 && out_is_file && remove(outfilename) == 0) {
+        fprintf(stderr, "Removed incomplete output %s\n", outfilename);
+    }
 
     /* Write CUE file if requested */
     if (result == 0 && createcue && !is_stdio(outfilename)) {

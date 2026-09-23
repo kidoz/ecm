@@ -246,7 +246,7 @@ void test_eccedc_generate_mode2_form2(void) {
 void test_write_cue_file_mode1(void) {
     TEST(write_cue_file_mode1);
 
-    decode_stats_t stats = {true, false};
+    decode_stats_t stats = {.saw_mode1 = true};
     const char *outname = "test_output_mode1.bin";
 
     ASSERT_EQ(0, write_cue_file(outname, &stats));
@@ -256,6 +256,7 @@ void test_write_cue_file_mode1(void) {
 
     char line[128];
     ASSERT_TRUE(fgets(line, sizeof(line), cue));
+    ASSERT_TRUE(strcmp(line, "FILE \"test_output_mode1.bin\" BINARY\n") == 0);
     ASSERT_TRUE(fgets(line, sizeof(line), cue));
     ASSERT_TRUE(strstr(line, "MODE1/2352") != nullptr);
 
@@ -271,7 +272,7 @@ void test_write_cue_file_mode1(void) {
 void test_write_cue_file_mode2(void) {
     TEST(write_cue_file_mode2);
 
-    decode_stats_t stats = {false, true};
+    decode_stats_t stats = {.saw_mode2_raw = true};
     const char *outname = "test_output_mode2.bin";
 
     ASSERT_EQ(0, write_cue_file(outname, &stats));
@@ -281,11 +282,37 @@ void test_write_cue_file_mode2(void) {
 
     char line[128];
     ASSERT_TRUE(fgets(line, sizeof(line), cue));
+    ASSERT_TRUE(strcmp(line, "FILE \"test_output_mode2.bin\" BINARY\n") == 0);
     ASSERT_TRUE(fgets(line, sizeof(line), cue));
     ASSERT_TRUE(strstr(line, "MODE2/2352") != nullptr);
 
     fclose(cue);
     remove("test_output_mode2.bin.cue");
+
+    PASS();
+}
+
+/*
+ * Test: path_basename() yields the name a CUE sheet next to the image must use. Players
+ * resolve FILE entries relative to the sheet, so any directory part has to be dropped.
+ */
+void test_path_basename(void) {
+    TEST(path_basename);
+
+    ASSERT_TRUE(strcmp(path_basename("image.bin"), "image.bin") == 0);
+    ASSERT_TRUE(strcmp(path_basename("outdir/restored.bin"), "restored.bin") == 0);
+    ASSERT_TRUE(strcmp(path_basename("/abs/dir/game.bin"), "game.bin") == 0);
+    ASSERT_TRUE(strcmp(path_basename("../up/game.bin"), "game.bin") == 0);
+    ASSERT_TRUE(strcmp(path_basename(""), "") == 0);
+    ASSERT_NULL(path_basename(nullptr));
+#if defined(_WIN32) || defined(_WIN64)
+    ASSERT_TRUE(strcmp(path_basename("outdir\\restored.bin"), "restored.bin") == 0);
+    ASSERT_TRUE(strcmp(path_basename("C:\\games/disc\\game.bin"), "game.bin") == 0);
+    ASSERT_TRUE(strcmp(path_basename("C:game.bin"), "game.bin") == 0);
+#else
+    /* A backslash is an ordinary file name character here */
+    ASSERT_TRUE(strcmp(path_basename("dir/odd\\name.bin"), "odd\\name.bin") == 0);
+#endif
 
     PASS();
 }
@@ -607,9 +634,11 @@ void test_mode2_record_expands_to_2336(void) {
     ASSERT_TRUE(fin != nullptr && fout != nullptr);
     write_mode2_stream(fin, sector, SECTOR_TYPE_MODE2_FORM1, false);
 
-    decode_stats_t stats = {false, false};
+    decode_stats_t stats = {false, false, false};
     ASSERT_EQ(0, unecmify(fin, fout, &stats, false, false, false));
-    ASSERT_TRUE(stats.saw_mode2);
+    ASSERT_TRUE(stats.saw_mode2_bare && !stats.saw_mode2_raw);
+    /* A bare body makes a MODE2/2336 image, and the CUE sheet has to say so */
+    ASSERT_TRUE(strcmp(cue_track_mode(&stats), "MODE2/2336") == 0);
 
     fseek(fout, 0, SEEK_END);
     ASSERT_EQ_MSG(SECTOR_SIZE_MODE2, ftell(fout), "type 2 record must expand to 2336 bytes");
@@ -692,6 +721,34 @@ void test_mode2_form2_stream_roundtrips_raw_sector(void) {
     fixture_mode2_sector(sector, SECTOR_TYPE_MODE2_FORM2, msf, 13);
 
     ASSERT_TRUE(roundtrips_raw_sector(sector, SECTOR_TYPE_MODE2_FORM2));
+    PASS();
+}
+
+/*
+ * Test: a Mode 2 record that follows its own 16-byte literal sync and header completes a raw
+ * 2352-byte sector, so the CUE sheet says MODE2/2352.
+ */
+void test_cue_track_mode_for_raw_mode2(void) {
+    TEST(cue_track_mode_for_raw_mode2);
+
+    eccedc_init();
+
+    static const uint8_t msf[3] = {0x00, 0x05, 0x10};
+    uint8_t sector[SECTOR_SIZE_RAW];
+    fixture_mode2_sector(sector, SECTOR_TYPE_MODE2_FORM2, msf, 4);
+
+    FILE *fin = test_tmpfile();
+    FILE *fout = test_tmpfile();
+    ASSERT_TRUE(fin != nullptr && fout != nullptr);
+    write_mode2_stream(fin, sector, SECTOR_TYPE_MODE2_FORM2, true);
+
+    decode_stats_t stats = {false, false, false};
+    ASSERT_EQ(0, unecmify(fin, fout, &stats, false, false, false));
+    ASSERT_TRUE(stats.saw_mode2_raw && !stats.saw_mode2_bare);
+    ASSERT_TRUE(strcmp(cue_track_mode(&stats), "MODE2/2352") == 0);
+
+    fclose(fin);
+    fclose(fout);
     PASS();
 }
 
@@ -779,9 +836,10 @@ void test_mode2_2352_restores_legacy_archive(void) {
     fwrite(edc, 1, EDC_SIZE, fin);
     rewind(fin);
 
-    decode_stats_t stats = {false, false};
+    decode_stats_t stats = {false, false, false};
     ASSERT_EQ(0, unecmify(fin, fout, &stats, false, false, true));
-    ASSERT_TRUE(stats.saw_mode2);
+    ASSERT_TRUE(stats.saw_mode2_raw && !stats.saw_mode2_bare);
+    ASSERT_TRUE(strcmp(cue_track_mode(&stats), "MODE2/2352") == 0);
 
     fseek(fout, 0, SEEK_END);
     ASSERT_EQ_MSG(3 * SECTOR_SIZE_RAW, ftell(fout), "every sector must expand to 2352 bytes");
@@ -871,6 +929,7 @@ int main(int argc, char **argv) {
     test_eccedc_generate_mode2_form2();
     test_write_cue_file_mode1();
     test_write_cue_file_mode2();
+    test_path_basename();
 
     TEST_CATEGORY("\nConsistency Tests");
     test_ecc_consistency();
@@ -886,6 +945,7 @@ int main(int argc, char **argv) {
     test_mode2_record_expands_to_2336();
     test_mode2_form1_stream_roundtrips_raw_sector();
     test_mode2_form2_stream_roundtrips_raw_sector();
+    test_cue_track_mode_for_raw_mode2();
     test_regenerate_mode2_header_addresses();
     test_mode2_2352_restores_legacy_archive();
 

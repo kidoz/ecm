@@ -35,6 +35,7 @@
 #define progress_update unecm_progress_update
 #define progress_t      unecm_progress_t
 #define is_stdio        unecm_is_stdio
+#define usage           unecm_usage
 #include "../src/unecm.c"
 #undef main
 #undef banner
@@ -42,6 +43,7 @@
 #undef progress_update
 #undef progress_t
 #undef is_stdio
+#undef usage
 
 /*
  * Timing utilities

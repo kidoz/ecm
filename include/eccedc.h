@@ -156,6 +156,35 @@ void eccedc_init(void);
 [[nodiscard]] uint32_t edc_compute(uint32_t edc, const uint8_t *src, size_t size);
 
 /*
+ * Sliding-window EDC: the EDC of a fixed-length window, moved forward one byte at a time.
+ * The EDC is linear and starts from zero, so dropping the first byte of a window only needs
+ * that byte's contribution across the window length, which leaving[] tabulates.
+ */
+typedef struct {
+    uint32_t leaving[256]; /* EDC of a byte followed by the window length in zero bytes */
+} edc_window_t;
+
+/*
+ * Prepare the table for windows of the given length. Calls eccedc_init() itself.
+ *
+ * @param w       Window table to fill (must not be null)
+ * @param length  Window length in bytes
+ */
+void edc_window_init(edc_window_t *w, size_t length);
+
+/*
+ * Move a window forward by one byte.
+ *
+ * @param w         Table prepared for the window length
+ * @param edc       EDC of the current window
+ * @param leaving   First byte of the current window
+ * @param entering  Byte just past the current window
+ * @return          EDC of the window one byte further on
+ */
+[[nodiscard]] uint32_t edc_window_roll(const edc_window_t *w, uint32_t edc, uint8_t leaving,
+                                       uint8_t entering);
+
+/*
  * Compute EDC and write it to destination buffer in little-endian format.
  *
  * @param src   Source data buffer (must not be null)
@@ -237,6 +266,17 @@ void sector_copy_subheader(uint8_t *sector);
 [[nodiscard]] bool file_is_same_as_path(FILE *f, const char *path);
 
 /*
+ * Return the final component of a path, as a pointer into path.
+ * On Windows both slashes and a drive prefix ("C:image.bin") separate components, and
+ * double-byte ANSI code pages are respected so a trail byte equal to '\' is not taken for a
+ * separator; elsewhere only '/' separates components.
+ *
+ * @param path  Path to split (must not be null)
+ * @return      Pointer to the character after the last separator, or path if there is none
+ */
+[[nodiscard]] const char *path_basename(const char *path);
+
+/*
  * Put a stream into binary mode so bytes pass through untranslated.
  * Needed for stdin/stdout on Windows, where the CRT defaults to text mode; a no-op elsewhere.
  *
@@ -244,6 +284,25 @@ void sector_copy_subheader(uint8_t *sector);
  * @return   true on success, false if the mode could not be changed
  */
 [[nodiscard]] bool stream_set_binary(FILE *f);
+
+/*
+ * Check whether a stream is attached to a terminal, so progress lines that rewrite themselves
+ * with '\r' are shown interactively but kept out of redirected logs.
+ *
+ * @param f  Open stream (must not be null)
+ * @return   true only for a terminal
+ */
+[[nodiscard]] bool stream_is_terminal(FILE *f);
+
+/*
+ * Check whether a stream is a regular disk file, as opposed to a pipe, terminal, or device.
+ * Positions reported by ftello() are only meaningful for regular files, and only a regular
+ * file should be deleted when a run fails.
+ *
+ * @param f  Open stream (must not be null)
+ * @return   true only for a regular file
+ */
+[[nodiscard]] bool stream_is_regular_file(FILE *f);
 
 /*
  * Flush buffered output and report write failures that per-write checks cannot see.

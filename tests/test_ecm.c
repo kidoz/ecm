@@ -897,6 +897,277 @@ void test_file_is_same_as_path(void) {
 }
 
 /*
+ * Encode data with the batch or streaming encoder. Returns the archive positioned just after
+ * the magic, or nullptr on failure.
+ */
+static FILE *encode_buffer(const uint8_t *data, size_t len, bool streaming) {
+    FILE *fin = test_tmpfile();
+    FILE *fout = test_tmpfile();
+    if (fin == nullptr || fout == nullptr || fwrite(data, 1, len, fin) != len) {
+        printf("FAIL: tmpfile\n");
+        goto fail;
+    }
+    rewind(fin);
+    if ((streaming ? ecmify_streaming(fin, fout, false) : ecmify(fin, fout, false)) != 0) {
+        printf("FAIL: encoder returned an error\n");
+        goto fail;
+    }
+    fclose(fin);
+    rewind(fout);
+    if (fgetc(fout) != ECM_MAGIC_E || fgetc(fout) != ECM_MAGIC_C || fgetc(fout) != ECM_MAGIC_M ||
+        fgetc(fout) != ECM_MAGIC_NULL) {
+        printf("FAIL: bad magic\n");
+        fclose(fout);
+        return nullptr;
+    }
+    return fout;
+
+fail:
+    if (fin)
+        fclose(fin);
+    if (fout)
+        fclose(fout);
+    return nullptr;
+}
+
+/*
+ * Walk an archive's records and require exactly the given (type, count) sequence followed by
+ * the end marker. Payloads are skipped by their stored size.
+ */
+static bool expect_records(FILE *f, const unsigned expected[][2], size_t n) {
+    static const long stored_size[4] = {1, MODE1_ADDRESS_SIZE + SECTOR_USER_DATA,
+                                        MODE2_FORM1_DATA_SIZE, MODE2_FORM2_DATA_SIZE};
+    unsigned type, count;
+
+    for (size_t i = 0; i < n; i++) {
+        if (!fixture_read_type_count(f, &type, &count)) {
+            printf("FAIL: truncated record header\n");
+            return false;
+        }
+        if (type != expected[i][0] || count != expected[i][1]) {
+            printf("FAIL: record %zu: expected type %u count %u, got type %u count %u\n", i,
+                   expected[i][0], expected[i][1], type, count);
+            return false;
+        }
+        fseek(f, stored_size[type] * (long)count, SEEK_CUR);
+    }
+    if (!fixture_read_type_count(f, &type, &count) || type != SECTOR_TYPE_LITERAL || count != 0) {
+        printf("FAIL: expected the end marker after %zu records, got type %u count %u\n", n, type,
+               count);
+        return false;
+    }
+    return true;
+}
+
+/*
+ * Test: the sliding-window EDC matches a direct computation at every offset.
+ */
+void test_edc_window_roll(void) {
+    TEST(edc_window_roll);
+
+    eccedc_init();
+
+    enum {
+        WINDOW = 100
+    };
+    uint8_t data[600];
+    for (size_t i = 0; i < sizeof(data); i++) {
+        data[i] = (uint8_t)((i * 37 + 11) & 0xFF);
+    }
+    edc_window_t w;
+    edc_window_init(&w, WINDOW);
+
+    uint32_t edc = edc_compute(0, data, WINDOW);
+    for (size_t i = 0; i + WINDOW < sizeof(data); i++) {
+        edc = edc_window_roll(&w, edc, data[i], data[i + WINDOW]);
+        ASSERT_EQ(edc_compute(0, data + i + 1, WINDOW), edc);
+    }
+    PASS();
+}
+
+/*
+ * Test: a run never grows past RECORD_COUNT_MAX. The format declares counts of 2^31 and above
+ * invalid; the encoder used to split runs only near 2^32, so a large ISO produced one literal
+ * record of about 4 billion bytes.
+ */
+void test_record_count_stays_below_2_31(void) {
+    TEST(record_count_stays_below_2_31);
+
+    ASSERT_EQ(0x7FFFFFFF, RECORD_COUNT_MAX);
+
+    run_t run = {SECTOR_TYPE_LITERAL, 0, RECORD_COUNT_MAX - SECTOR_SIZE_RAW};
+    ASSERT_TRUE(run_can_extend(&run, SECTOR_TYPE_LITERAL, SECTOR_SIZE_RAW));
+    ASSERT_FALSE(run_can_extend(&run, SECTOR_TYPE_LITERAL, SECTOR_SIZE_RAW + 1));
+    ASSERT_FALSE(run_can_extend(&run, SECTOR_TYPE_MODE1, 1));
+
+    run.count = 0;
+    ASSERT_FALSE(run_can_extend(&run, SECTOR_TYPE_LITERAL, 1)); /* an empty run starts afresh */
+    PASS();
+}
+
+/*
+ * Test: a sector straddling the end of the 1 MB analysis buffer is still modelled. With 446
+ * sectors the last one crosses the first buffer boundary; the refill used to be skipped there,
+ * and the sector was stored as 2352 literal bytes.
+ */
+void test_sector_across_buffer_end_is_modelled(void) {
+    TEST(sector_across_buffer_end_is_modelled);
+
+    eccedc_init();
+
+    enum {
+        SECTORS = 446
+    };
+    static const uint8_t msf[3] = {0x00, 0x02, 0x00};
+    uint8_t *image = malloc((size_t)SECTORS * SECTOR_SIZE_RAW);
+    ASSERT_NOT_NULL(image);
+    fixture_mode1_sector(image, msf, 3);
+    for (size_t i = 1; i < SECTORS; i++) {
+        memcpy(image + i * SECTOR_SIZE_RAW, image, SECTOR_SIZE_RAW);
+    }
+
+    FILE *f = encode_buffer(image, (size_t)SECTORS * SECTOR_SIZE_RAW, false);
+    free(image);
+    ASSERT_NOT_NULL(f);
+    static const unsigned records[][2] = {{SECTOR_TYPE_MODE1, SECTORS}};
+    ASSERT_TRUE(expect_records(f, records, 1));
+    fclose(f);
+    PASS();
+}
+
+/*
+ * Test: sectors behind an odd-sized prefix are found by both encoders. Detection used to look
+ * only at 2352-byte offsets from the start of the input, so one leading byte disabled all
+ * compression.
+ */
+void test_sector_after_prefix_is_found(void) {
+    TEST(sector_after_prefix_is_found);
+
+    eccedc_init();
+
+    static const uint8_t msf0[3] = {0x00, 0x02, 0x00};
+    static const uint8_t msf1[3] = {0x00, 0x02, 0x01};
+    uint8_t data[1 + 2 * SECTOR_SIZE_RAW];
+    data[0] = 'X';
+    fixture_mode1_sector(data + 1, msf0, 3);
+    fixture_mode1_sector(data + 1 + SECTOR_SIZE_RAW, msf1, 5);
+
+    FILE *batch = encode_buffer(data, sizeof(data), false);
+    ASSERT_NOT_NULL(batch);
+    static const unsigned batch_records[][2] = {{SECTOR_TYPE_LITERAL, 1}, {SECTOR_TYPE_MODE1, 2}};
+    ASSERT_TRUE(expect_records(batch, batch_records, 2));
+    fclose(batch);
+
+    FILE *stream = encode_buffer(data, sizeof(data), true);
+    ASSERT_NOT_NULL(stream);
+    static const unsigned stream_records[][2] = {
+        {SECTOR_TYPE_LITERAL, 1}, {SECTOR_TYPE_MODE1, 1}, {SECTOR_TYPE_MODE1, 1}};
+    ASSERT_TRUE(expect_records(stream, stream_records, 3));
+    fclose(stream);
+    PASS();
+}
+
+/*
+ * Test: a MODE2/2336 image, whose sectors lack sync and header, is modelled record by record as
+ * the original encoder did, rather than stored as literal bytes.
+ */
+void test_headerless_mode2_image_is_modelled(void) {
+    TEST(headerless_mode2_image_is_modelled);
+
+    eccedc_init();
+
+    static const uint8_t msf[3] = {0x00, 0x02, 0x00};
+    static const sector_type_t forms[3] = {SECTOR_TYPE_MODE2_FORM1, SECTOR_TYPE_MODE2_FORM1,
+                                           SECTOR_TYPE_MODE2_FORM2};
+    uint8_t image[3 * SECTOR_SIZE_MODE2];
+    for (size_t i = 0; i < 3; i++) {
+        uint8_t sector[SECTOR_SIZE_RAW];
+        fixture_mode2_sector(sector, forms[i], msf, (uint8_t)(7 + i));
+        memcpy(image + i * SECTOR_SIZE_MODE2, sector + OFFSET_MODE2_SUBHEADER, SECTOR_SIZE_MODE2);
+    }
+
+    FILE *batch = encode_buffer(image, sizeof(image), false);
+    ASSERT_NOT_NULL(batch);
+    static const unsigned batch_records[][2] = {{SECTOR_TYPE_MODE2_FORM1, 2},
+                                                {SECTOR_TYPE_MODE2_FORM2, 1}};
+    ASSERT_TRUE(expect_records(batch, batch_records, 2));
+    fclose(batch);
+
+    FILE *stream = encode_buffer(image, sizeof(image), true);
+    ASSERT_NOT_NULL(stream);
+    static const unsigned stream_records[][2] = {
+        {SECTOR_TYPE_MODE2_FORM1, 1}, {SECTOR_TYPE_MODE2_FORM1, 1}, {SECTOR_TYPE_MODE2_FORM2, 1}};
+    ASSERT_TRUE(expect_records(stream, stream_records, 3));
+    fclose(stream);
+    PASS();
+}
+
+/*
+ * Test: raw sectors each followed by 96 bytes of subchannel data (2448-byte layout) are all
+ * found; only the subchannel bytes stay literal.
+ */
+void test_sectors_with_subchannel_are_found(void) {
+    TEST(sectors_with_subchannel_are_found);
+
+    eccedc_init();
+
+    enum {
+        SUBCHANNEL = 96
+    };
+    static const uint8_t msf0[3] = {0x00, 0x02, 0x00};
+    static const uint8_t msf1[3] = {0x00, 0x02, 0x01};
+    uint8_t data[2 * (SECTOR_SIZE_RAW + SUBCHANNEL)];
+    memset(data, 0x5A, sizeof(data));
+    fixture_mode1_sector(data, msf0, 3);
+    fixture_mode1_sector(data + SECTOR_SIZE_RAW + SUBCHANNEL, msf1, 5);
+
+    FILE *f = encode_buffer(data, sizeof(data), false);
+    ASSERT_NOT_NULL(f);
+    static const unsigned records[][2] = {{SECTOR_TYPE_MODE1, 1},
+                                          {SECTOR_TYPE_LITERAL, SUBCHANNEL},
+                                          {SECTOR_TYPE_MODE1, 1},
+                                          {SECTOR_TYPE_LITERAL, SUBCHANNEL}};
+    ASSERT_TRUE(expect_records(f, records, 4));
+    fclose(f);
+    PASS();
+}
+
+/*
+ * Test: after repetitive padding, where the subheader test passes at nearly every byte and the
+ * window EDCs are rolled rather than recomputed, a Mode 2 body that follows is still found at
+ * its exact offset.
+ */
+void test_body_found_after_repetitive_padding(void) {
+    TEST(body_found_after_repetitive_padding);
+
+    eccedc_init();
+    body_windows_init();
+
+    enum {
+        PADDING = 700
+    };
+    static const uint8_t msf[3] = {0x00, 0x02, 0x00};
+    uint8_t sector[SECTOR_SIZE_RAW];
+    uint8_t buf[PADDING + SECTOR_SIZE_MODE2];
+    fixture_mode2_sector(sector, SECTOR_TYPE_MODE2_FORM1, msf, 9);
+    memset(buf, 0xFF, PADDING);
+    memcpy(buf + PADDING, sector + OFFSET_MODE2_SUBHEADER, SECTOR_SIZE_MODE2);
+
+    body_edc_t scan = {nullptr, 0, 0};
+    scan_t next = scan_next(&scan, buf, sizeof(buf), true);
+    ASSERT_EQ(PADDING, next.literal);
+    ASSERT_EQ(SECTOR_TYPE_MODE2_FORM1, next.type);
+    ASSERT_FALSE(next.raw);
+
+    /* Without end of input, fewer than SECTOR_SIZE_RAW bytes of lookahead decide nothing */
+    scan = (body_edc_t){nullptr, 0, 0};
+    next = scan_next(&scan, buf + PADDING, SECTOR_SIZE_MODE2, false);
+    ASSERT_EQ(0, next.literal);
+    ASSERT_EQ(SECTOR_TYPE_LITERAL, next.type);
+    PASS();
+}
+
+/*
  * Main test runner
  */
 int main(int argc, char **argv) {
@@ -939,6 +1210,15 @@ int main(int argc, char **argv) {
     test_mode2_header_kept_as_literal_batch();
     test_mode2_header_kept_as_literal_streaming();
     test_mode2_run_alternates_literal_and_record();
+
+    TEST_CATEGORY("\nSector Scanning Tests");
+    test_edc_window_roll();
+    test_record_count_stays_below_2_31();
+    test_sector_across_buffer_end_is_modelled();
+    test_sector_after_prefix_is_found();
+    test_headerless_mode2_image_is_modelled();
+    test_sectors_with_subchannel_are_found();
+    test_body_found_after_repetitive_padding();
 
     TEST_CATEGORY("\nI/O Safety Tests");
     test_streaming_rejects_read_error();

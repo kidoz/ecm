@@ -6,6 +6,7 @@
 #endif
 
 #include <errno.h>
+#include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -28,7 +29,11 @@
 enum {
     /* Extra buffer space for alignment */
     INPUT_QUEUE_PADDING = 0x10,
-    INPUT_QUEUE_SIZE = 1048576 + INPUT_QUEUE_PADDING
+    INPUT_QUEUE_SIZE = 1048576 + INPUT_QUEUE_PADDING,
+    /* Streaming read-ahead; any size well above one sector works */
+    STREAM_BUFFER_SIZE = 262144,
+    /* Largest count one record may carry: the format declares 2^31 and above invalid */
+    RECORD_COUNT_MAX = 0x7FFFFFFF,
 };
 
 static const char *sector_type_names[] = {"literal", "mode1", "mode2f1", "mode2f2"};
@@ -138,6 +143,118 @@ static sector_type_t check_type_raw(uint8_t *sector) {
 }
 
 /*
+ * EDCs of the two windows a header-less Mode 2 body is checked against: bytes 0..0x807 for
+ * Form 1 and 0..0x91B for Form 2. Scanning repetitive literal data such as 0xFF padding passes
+ * the subheader test at nearly every byte, and recomputing both windows there would cost
+ * about 4 KB of work per byte, so they are rolled forward one byte at a time instead.
+ */
+typedef struct {
+    const uint8_t *at; /* body start the EDCs below describe, or nullptr when unknown */
+    uint32_t form1;    /* EDC of at[0 .. MODE2_EDC_OFFSET) */
+    uint32_t form2;    /* EDC of at[0 .. MODE2_FORM2_EDC_OFFSET) */
+} body_edc_t;
+
+static edc_window_t form1_window;
+static edc_window_t form2_window;
+static bool body_windows_ready = false;
+
+static void body_windows_init(void) {
+    if (!body_windows_ready) {
+        edc_window_init(&form1_window, MODE2_EDC_OFFSET);
+        edc_window_init(&form2_window, MODE2_FORM2_EDC_OFFSET);
+        body_windows_ready = true;
+    }
+}
+
+/*
+ * Bring the window EDCs to the body starting at p. Rolls forward from the previous position
+ * when that is cheaper than recomputing. Callers reset s->at whenever the buffer moves.
+ */
+static void body_edc_at(body_edc_t *s, const uint8_t *p) {
+    if (s->at == p) {
+        return;
+    }
+    if (s->at != nullptr && s->at < p && (size_t)(p - s->at) < MODE2_FORM2_EDC_OFFSET) {
+        for (; s->at < p; s->at++) {
+            s->form1 = edc_window_roll(&form1_window, s->form1, s->at[0], s->at[MODE2_EDC_OFFSET]);
+            s->form2 =
+                edc_window_roll(&form2_window, s->form2, s->at[0], s->at[MODE2_FORM2_EDC_OFFSET]);
+        }
+        return;
+    }
+    s->form1 = edc_compute(0, p, MODE2_EDC_OFFSET);
+    s->form2 =
+        edc_compute(s->form1, p + MODE2_EDC_OFFSET, MODE2_FORM2_EDC_OFFSET - MODE2_EDC_OFFSET);
+    s->at = p;
+}
+
+/*
+ * Sector type detection for a header-less 2336-byte Mode 2 body (subheader onwards), as found
+ * in MODE2/2336 images or wherever literal data leaves sectors off the 2352-byte grid. The
+ * body needs at least SECTOR_SIZE_MODE2 readable bytes.
+ */
+static sector_type_t check_type_body(body_edc_t *s, const uint8_t *body) {
+    if (!check_subheader_dup(body)) {
+        return SECTOR_TYPE_LITERAL;
+    }
+    body_edc_at(s, body);
+    if (edc_check_bytes(s->form1, body + MODE2_EDC_OFFSET)) {
+        /* Form 1 ECC covers a zeroed address, so give the body a raw-sector frame */
+        uint8_t sector[SECTOR_SIZE_RAW];
+        memset(sector, 0, SECTOR_SYNC_HEADER_SIZE);
+        memcpy(sector + SECTOR_SYNC_HEADER_SIZE, body, SECTOR_SIZE_MODE2);
+        if (ecc_verify(sector, true, sector + OFFSET_MODE1_ECC_P)) {
+            return SECTOR_TYPE_MODE2_FORM1;
+        }
+    }
+    if (edc_check_bytes(s->form2, body + MODE2_FORM2_EDC_OFFSET)) {
+        return SECTOR_TYPE_MODE2_FORM2;
+    }
+    return SECTOR_TYPE_LITERAL;
+}
+
+/* What the scanner found: literal bytes, then optionally one sector */
+typedef struct {
+    size_t literal;     /* literal bytes before the sector */
+    sector_type_t type; /* record type of the sector, or SECTOR_TYPE_LITERAL for none */
+    bool raw;           /* a raw 2352-byte sector rather than a header-less Mode 2 body */
+} scan_t;
+
+/*
+ * Find the next sector the format can model in buf[0 .. avail), testing every byte offset as
+ * the original encoder did: first a raw 2352-byte sector with sync, then a header-less
+ * 2336-byte Mode 2 body. Aligned raw images pass the first test at each sector boundary; the
+ * second recovers MODE2/2336 images, sectors behind an odd-sized prefix, and layouts with
+ * extra per-sector bytes such as 2448-byte raw plus subchannel dumps. Everything before the
+ * sector is literal.
+ *
+ * Unless eof is set, the scan stops at the first offset with less than a raw sector of
+ * lookahead, since more input could complete a sector there.
+ */
+static scan_t scan_next(body_edc_t *s, uint8_t *buf, size_t avail, bool eof) {
+    size_t stop = eof ? avail : (avail >= SECTOR_SIZE_RAW ? avail - SECTOR_SIZE_RAW + 1 : 0);
+
+    for (size_t i = 0; i < stop; i++) {
+        uint8_t *p = buf + i;
+        size_t left = avail - i;
+        /* Cheap first-byte filters keep literal data moving; the full checks follow */
+        if (left >= SECTOR_SIZE_RAW && p[0] == SYNC_BYTE_START && p[1] == SYNC_BYTE_MIDDLE) {
+            sector_type_t type = check_type_raw(p);
+            if (type != SECTOR_TYPE_LITERAL) {
+                return (scan_t){i, type, true};
+            }
+        }
+        if (left >= SECTOR_SIZE_MODE2 && p[0] == p[4] && p[1] == p[5]) {
+            sector_type_t type = check_type_body(s, p);
+            if (type != SECTOR_TYPE_LITERAL) {
+                return (scan_t){i, type, false};
+            }
+        }
+    }
+    return (scan_t){stop, SECTOR_TYPE_LITERAL, false};
+}
+
+/*
  * Encode a type/count combo to output
  */
 [[nodiscard]] static int write_type_count(FILE *out, unsigned type, unsigned count) {
@@ -162,12 +279,14 @@ typedef struct {
     int64_t analyze;
     int64_t encode;
     int64_t total;
+    bool show; /* only a terminal gets the self-overwriting progress line */
 } progress_t;
 
 static void progress_reset(progress_t *p, int64_t total) {
     p->analyze = 0;
     p->encode = 0;
     p->total = total;
+    p->show = stream_is_terminal(stderr);
 }
 
 static void progress_update(progress_t *p, int64_t analyze, int64_t encode) {
@@ -175,7 +294,7 @@ static void progress_update(progress_t *p, int64_t analyze, int64_t encode) {
     p->analyze = analyze;
     p->encode = encode;
 
-    if (changed) {
+    if (changed && p->show) {
         int64_t d = (p->total + 64) / 128;
         if (!d)
             d = 1;
@@ -340,15 +459,42 @@ static int flush_sector_run(uint32_t *edc, sector_type_t type, unsigned count, F
 /*
  * Print encoding statistics report.
  */
-static void print_report(const unsigned typetally[4], int64_t total_in, FILE *out) {
-    fprintf(stderr, "Literal bytes........... %10u\n", typetally[SECTOR_TYPE_LITERAL]);
-    fprintf(stderr, "Mode 1 sectors.......... %10u\n", typetally[SECTOR_TYPE_MODE1]);
-    fprintf(stderr, "Mode 2 form 1 sectors... %10u\n", typetally[SECTOR_TYPE_MODE2_FORM1]);
-    fprintf(stderr, "Mode 2 form 2 sectors... %10u\n", typetally[SECTOR_TYPE_MODE2_FORM2]);
-    off_t outpos = ftello(out);
-    fprintf(stderr, "Encoded %lld bytes -> %lld bytes\n", (long long)total_in,
-            (long long)(outpos >= 0 ? outpos : 0));
+static void print_report(const uint64_t typetally[4], int64_t total_in, FILE *out) {
+    fprintf(stderr, "Literal bytes........... %10" PRIu64 "\n", typetally[SECTOR_TYPE_LITERAL]);
+    fprintf(stderr, "Mode 1 sectors.......... %10" PRIu64 "\n", typetally[SECTOR_TYPE_MODE1]);
+    fprintf(stderr, "Mode 2 form 1 sectors... %10" PRIu64 "\n", typetally[SECTOR_TYPE_MODE2_FORM1]);
+    fprintf(stderr, "Mode 2 form 2 sectors... %10" PRIu64 "\n", typetally[SECTOR_TYPE_MODE2_FORM2]);
+    /* A pipe has no meaningful position, so its size is only known to the reader */
+    off_t outpos = stream_is_regular_file(out) ? ftello(out) : -1;
+    if (outpos >= 0) {
+        fprintf(stderr, "Encoded %lld bytes -> %lld bytes\n", (long long)total_in,
+                (long long)outpos);
+    } else {
+        fprintf(stderr, "Encoded %lld bytes\n", (long long)total_in);
+    }
     fprintf(stderr, "Done.\n");
+}
+
+/*
+ * Write one sector found by scan_next() as its own record. A raw Mode 2 sector carries its
+ * sync and header as a 16-byte literal record first; see queue_raw_sector().
+ */
+static int write_sector_unit(const uint8_t *sector, scan_t unit, FILE *out, uint32_t *edc,
+                             uint64_t typetally[4]) {
+    const uint8_t *record = sector;
+    if (unit.raw && unit.type != SECTOR_TYPE_MODE1) {
+        if (write_literal_record(sector, SECTOR_SYNC_HEADER_SIZE, out, edc) < 0) {
+            return -1;
+        }
+        typetally[SECTOR_TYPE_LITERAL] += SECTOR_SYNC_HEADER_SIZE;
+        record = sector + SECTOR_SYNC_HEADER_SIZE;
+    }
+    if (write_type_count(out, unit.type, 1) < 0 ||
+        write_sector_payload(record, out, edc, unit.type) < 0) {
+        return -1;
+    }
+    typetally[unit.type]++;
+    return 0;
 }
 
 /*
@@ -356,81 +502,96 @@ static void print_report(const unsigned typetally[4], int64_t total_in, FILE *ou
  * Works with stdin/pipes.
  *
  * Trade-offs vs batch mode:
- * - Lower memory usage (~2.4 KB vs ~1 MB buffer)
- * - Processes one sector at a time (no batching of same-type runs)
- * - Higher output overhead for consecutive same-type sectors
+ * - Smaller buffer (256 KB read-ahead vs ~1 MB)
+ * - One record per sector (no batching of same-type runs)
+ * - Slightly higher output overhead for consecutive same-type sectors
  * - Works with non-seekable streams (stdin, pipes)
  */
 static int ecmify_streaming(FILE *in, FILE *out, bool verbose) {
-    uint8_t buf[SECTOR_SIZE_RAW];
+    uint8_t *buf = nullptr;
+    size_t start = 0;
+    size_t avail = 0;
+    bool eof = false;
+    body_edc_t scan = {nullptr, 0, 0};
     uint32_t inedc = 0;
-    unsigned typetally[4] = {0};
+    uint64_t typetally[4] = {0};
     int64_t total_in = 0;
-    unsigned sector_num = 0;
+    int result = 1;
 
     ECM_VERBOSE(verbose, "Using streaming mode (stdin/pipe)");
+    body_windows_init();
 
-    if (write_magic_header(out) < 0) {
+    buf = malloc(STREAM_BUFFER_SIZE);
+    if (!buf) {
+        fprintf(stderr, "Error: failed to allocate input buffer\n");
         return 1;
+    }
+    if (write_magic_header(out) < 0) {
+        goto done;
     }
 
     for (;;) {
-        size_t dataavail = fread(buf, 1, SECTOR_SIZE_RAW, in);
-        /* A short read is only the end of input when the stream carries no error */
-        if (dataavail < SECTOR_SIZE_RAW && ferror(in)) {
-            fprintf(stderr, "Error: failed to read input: %s\n", strerror(errno));
-            return 1;
+        /* Keep a raw sector of lookahead while input lasts */
+        if (!eof && avail < SECTOR_SIZE_RAW) {
+            memmove(buf, buf + start, avail);
+            start = 0;
+            scan.at = nullptr;
+            size_t want = STREAM_BUFFER_SIZE - avail;
+            size_t got = fread(buf + avail, 1, want, in);
+            /* A short read is only the end of input when the stream carries no error */
+            if (got < want) {
+                if (ferror(in)) {
+                    fprintf(stderr, "Error: failed to read input: %s\n", strerror(errno));
+                    goto done;
+                }
+                eof = true;
+            }
+            avail += got;
+            total_in += (int64_t)got;
         }
-        if (dataavail == 0) {
+        if (avail == 0) {
             break;
         }
-        total_in += (int64_t)dataavail;
 
-        sector_type_t type =
-            dataavail < SECTOR_SIZE_RAW ? SECTOR_TYPE_LITERAL : check_type_raw(buf);
-
-        ECM_VERBOSE(verbose, "Sector %u: type=%s, size=%zu", sector_num++, sector_type_names[type],
-                    dataavail);
-
-        if (type == SECTOR_TYPE_LITERAL) {
-            if (write_literal_record(buf, dataavail, out, &inedc) < 0) {
+        scan_t next = scan_next(&scan, buf + start, avail, eof);
+        if (next.literal) {
+            ECM_VERBOSE(verbose, "Literal: %zu bytes", next.literal);
+            if (write_literal_record(buf + start, next.literal, out, &inedc) < 0) {
                 goto writeerr;
             }
-            typetally[SECTOR_TYPE_LITERAL] += (unsigned)dataavail;
-            continue;
+            typetally[SECTOR_TYPE_LITERAL] += next.literal;
+            start += next.literal;
+            avail -= next.literal;
         }
-
-        const uint8_t *record = buf;
-        if (type != SECTOR_TYPE_MODE1) {
-            /* Sync + header travel as literal bytes; see queue_raw_sector() */
-            if (write_literal_record(buf, SECTOR_SYNC_HEADER_SIZE, out, &inedc) < 0) {
+        if (next.type != SECTOR_TYPE_LITERAL) {
+            size_t size = next.raw ? SECTOR_SIZE_RAW : SECTOR_SIZE_MODE2;
+            ECM_VERBOSE(verbose, "Sector: type=%s, %s", sector_type_names[next.type],
+                        next.raw ? "raw" : "header-less body");
+            if (write_sector_unit(buf + start, next, out, &inedc, typetally) < 0) {
                 goto writeerr;
             }
-            typetally[SECTOR_TYPE_LITERAL] += SECTOR_SYNC_HEADER_SIZE;
-            record = buf + SECTOR_SYNC_HEADER_SIZE;
+            start += size;
+            avail -= size;
         }
-        if (write_type_count(out, type, 1) < 0 ||
-            write_sector_payload(record, out, &inedc, type) < 0) {
-            goto writeerr;
-        }
-        typetally[type]++;
     }
 
     if (write_type_count(out, 0, 0) < 0) {
         fprintf(stderr, "Error: failed to write end marker\n");
-        return 1;
+        goto done;
     }
-
     if (write_edc_checksum(out, inedc) < 0) {
-        return 1;
+        goto done;
     }
 
     print_report(typetally, total_in, out);
-    return 0;
+    result = 0;
+    goto done;
 
 writeerr:
     fprintf(stderr, "Error: failed to write output\n");
-    return 1;
+done:
+    free(buf);
+    return result;
 }
 
 /*
@@ -448,7 +609,7 @@ typedef struct {
     FILE *in;
     FILE *out;
     uint32_t edc;
-    unsigned typetally[4];
+    uint64_t typetally[4];
     progress_t progress;
     run_t run;
     bool verbose;
@@ -470,7 +631,7 @@ static int run_flush(batch_encoder_t *enc, const char *why) {
         fprintf(stderr, "Error: failed to seek input file\n");
         return -1;
     }
-    enc->typetally[run->type] += (unsigned)run->count;
+    enc->typetally[run->type] += (uint64_t)run->count;
     if (flush_sector_run(&enc->edc, run->type, (unsigned)run->count, enc->in, enc->out,
                          &enc->progress) < 0) {
         return -1;
@@ -480,13 +641,23 @@ static int run_flush(batch_encoder_t *enc, const char *why) {
 }
 
 /*
+ * Whether count more units of the given type can join the pending run. A run holds one type,
+ * and its count must stay below 2^31: the format declares larger counts invalid, and a
+ * decoder that enforces that rejects the whole file.
+ */
+static bool run_can_extend(const run_t *run, sector_type_t type, int64_t count) {
+    return run->count != 0 && run->type == type && run->count + count <= RECORD_COUNT_MAX;
+}
+
+/*
  * Append count units of the given type found at input offset start, flushing the pending
- * run when the type changes or its count nears the 32-bit type/count limit.
+ * run first when the type changes or the record would exceed RECORD_COUNT_MAX.
  */
 static int run_add(batch_encoder_t *enc, sector_type_t type, int64_t start, int64_t count) {
     run_t *run = &enc->run;
 
-    if (run->count != 0 && run->type != type && run_flush(enc, "Flushing batch") < 0) {
+    if (run->count != 0 && !run_can_extend(run, type, count) &&
+        run_flush(enc, run->type == type ? "Splitting batch" : "Flushing batch") < 0) {
         return -1;
     }
     if (run->count == 0) {
@@ -494,10 +665,6 @@ static int run_add(batch_encoder_t *enc, sector_type_t type, int64_t start, int6
         run->start = start;
     }
     run->count += count;
-
-    if (run->count >= (int64_t)(UINT32_MAX - SECTOR_SIZE_RAW)) {
-        return run_flush(enc, "Splitting batch");
-    }
     return 0;
 }
 
@@ -537,6 +704,7 @@ static int queue_raw_sector(batch_encoder_t *enc, sector_type_t type, int64_t po
 static int ecmify(FILE *in, FILE *out, bool verbose) {
     uint8_t *inputqueue = nullptr;
     batch_encoder_t enc = {.in = in, .out = out, .verbose = verbose};
+    body_edc_t scan = {nullptr, 0, 0};
     int64_t incheckpos = 0;
     int64_t inbufferpos = 0;
     int64_t intotallength;
@@ -545,6 +713,7 @@ static int ecmify(FILE *in, FILE *out, bool verbose) {
     int result = 0;
 
     ECM_VERBOSE(verbose, "Using batch mode (seekable file)");
+    body_windows_init();
 
     inputqueue = malloc(INPUT_QUEUE_SIZE);
     if (!inputqueue) {
@@ -577,17 +746,21 @@ static int ecmify(FILE *in, FILE *out, bool verbose) {
     }
 
     for (;;) {
-        /* Fill input buffer if needed */
-        if (dataavail < SECTOR_SIZE_RAW && (int64_t)dataavail < intotallength - inbufferpos) {
-            size_t willread = (size_t)(intotallength - inbufferpos);
-            if (willread > (INPUT_QUEUE_SIZE - INPUT_QUEUE_PADDING) - dataavail) {
-                willread = (INPUT_QUEUE_SIZE - INPUT_QUEUE_PADDING) - dataavail;
-            }
+        /*
+         * Keep a raw sector of lookahead while unread input remains. Comparing the buffered
+         * bytes with the unread ones instead skipped the refill when a sector straddled the
+         * buffer end with most of it buffered, and that sector was stored as literal bytes.
+         */
+        if (dataavail < SECTOR_SIZE_RAW && inbufferpos < intotallength) {
+            int64_t unread = intotallength - inbufferpos;
+            size_t room = (INPUT_QUEUE_SIZE - INPUT_QUEUE_PADDING) - dataavail;
+            size_t willread = unread < (int64_t)room ? (size_t)unread : room;
             if (inqueuestart) {
                 memmove(inputqueue + INPUT_QUEUE_PADDING,
                         inputqueue + INPUT_QUEUE_PADDING + inqueuestart, dataavail);
                 inqueuestart = 0;
             }
+            scan.at = nullptr; /* the buffer moved */
             if (willread) {
                 progress_update(&enc.progress, inbufferpos, enc.progress.encode);
                 if (fseeko(in, (off_t)inbufferpos, SEEK_SET) != 0) {
@@ -609,16 +782,23 @@ static int ecmify(FILE *in, FILE *out, bool verbose) {
         if (dataavail == 0)
             break;
 
-        /* Classify at raw-sector granularity; a short tail can only be literal */
-        size_t step;
-        int rc;
-        if (dataavail < SECTOR_SIZE_RAW) {
-            step = dataavail;
-            rc = run_add(&enc, SECTOR_TYPE_LITERAL, incheckpos, (int64_t)step);
-        } else {
-            step = SECTOR_SIZE_RAW;
-            sector_type_t type = check_type_raw(inputqueue + INPUT_QUEUE_PADDING + inqueuestart);
-            rc = queue_raw_sector(&enc, type, incheckpos);
+        bool eof = inbufferpos >= intotallength;
+        scan_t next =
+            scan_next(&scan, inputqueue + INPUT_QUEUE_PADDING + inqueuestart, dataavail, eof);
+        size_t step = next.literal;
+        int rc = 0;
+        if (next.literal) {
+            rc = run_add(&enc, SECTOR_TYPE_LITERAL, incheckpos, (int64_t)next.literal);
+        }
+        if (rc == 0 && next.type != SECTOR_TYPE_LITERAL) {
+            int64_t at = incheckpos + (int64_t)next.literal;
+            if (next.raw) {
+                rc = queue_raw_sector(&enc, next.type, at);
+                step += SECTOR_SIZE_RAW;
+            } else {
+                rc = run_add(&enc, next.type, at, 1);
+                step += SECTOR_SIZE_MODE2;
+            }
         }
         if (rc < 0) {
             result = 1;
@@ -660,36 +840,68 @@ static bool is_stdio(const char *filename) {
     return filename[0] == '-' && filename[1] == '\0';
 }
 
+static void usage(FILE *f, const char *prog) {
+    fprintf(f, "usage: %s [-v|--verbose] cdimagefile [ecmfile]\n", prog);
+    fprintf(f, "       %s -h|--help | -V|--version\n", prog);
+    fprintf(f, "       use '-' for stdin/stdout, and '--' before file names starting with '-'\n");
+}
+
 int main(int argc, char **argv) {
     FILE *fin = nullptr;
     FILE *fout = nullptr;
+    char *files[2] = {nullptr, nullptr};
+    int nfiles = 0;
+    bool options_done = false;
     const char *infilename;
     char *outfilename = nullptr;
     bool outfilename_allocated = false;
+    bool out_is_file = false;
     bool verbose = false;
     int result = 0;
-    int argoffset = 0;
+
+    /* Options may appear anywhere; '--' ends them, and a lone '-' is a file name */
+    for (int i = 1; i < argc; i++) {
+        const char *arg = argv[i];
+        if (!options_done && arg[0] == '-' && arg[1] != '\0') {
+            if (strcmp(arg, "--") == 0) {
+                options_done = true;
+            } else if (strcmp(arg, "-v") == 0 || strcmp(arg, "--verbose") == 0) {
+                verbose = true;
+            } else if (strcmp(arg, "-h") == 0 || strcmp(arg, "--help") == 0) {
+                usage(stdout, argv[0]);
+                return 0;
+            } else if (strcmp(arg, "-V") == 0 || strcmp(arg, "--version") == 0) {
+                printf("ecm " ECM_VERSION "\n");
+                return 0;
+            } else {
+                banner();
+                fprintf(stderr, "unknown option: %s\n", arg);
+                usage(stderr, argv[0]);
+                return 1;
+            }
+            continue;
+        }
+        if (nfiles == 2) {
+            banner();
+            fprintf(stderr, "too many file names: %s\n", arg);
+            usage(stderr, argv[0]);
+            return 1;
+        }
+        files[nfiles++] = argv[i];
+    }
 
     banner();
-    eccedc_init();
-
-    /* Check for -v/--verbose option */
-    if (argc >= 2 && (strcmp(argv[1], "-v") == 0 || strcmp(argv[1], "--verbose") == 0)) {
-        verbose = true;
-        argoffset = 1;
-    }
-
-    if (argc < 2 + argoffset || argc > 3 + argoffset) {
-        fprintf(stderr, "usage: %s [-v|--verbose] cdimagefile [ecmfile]\n", argv[0]);
-        fprintf(stderr, "       use '-' for stdin/stdout\n");
+    if (nfiles == 0) {
+        usage(stderr, argv[0]);
         return 1;
     }
+    eccedc_init();
 
-    infilename = argv[1 + argoffset];
+    infilename = files[0];
 
     /* Determine output filename */
-    if (argc == 3 + argoffset) {
-        outfilename = argv[2 + argoffset];
+    if (nfiles == 2) {
+        outfilename = files[1];
     } else if (is_stdio(infilename)) {
         outfilename = "-";
     } else {
@@ -744,6 +956,7 @@ int main(int argc, char **argv) {
             result = 1;
             goto cleanup;
         }
+        out_is_file = stream_is_regular_file(fout);
     }
 
     /* Use streaming mode for stdin, batch mode for regular files */
@@ -758,6 +971,11 @@ int main(int argc, char **argv) {
         result = 1;
     }
     fout = nullptr;
+
+    /* A truncated archive under the requested name would pass for a finished one */
+    if (result != 0 && out_is_file && remove(outfilename) == 0) {
+        fprintf(stderr, "Removed incomplete output %s\n", outfilename);
+    }
 
 cleanup:
     if (fin && !is_stdio(infilename)) {

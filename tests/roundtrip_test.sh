@@ -33,8 +33,22 @@ if [ ! -x "$UNECM_BIN" ]; then
     exit 1
 fi
 
+# Some tests run from inside the test directory, so the binaries need absolute paths
+ECM_BIN="$(cd "$(dirname "$ECM_BIN")" && pwd)/$(basename "$ECM_BIN")"
+UNECM_BIN="$(cd "$(dirname "$UNECM_BIN")" && pwd)/$(basename "$UNECM_BIN")"
+
+# Fixtures are built with Python 3; some Windows installs only provide it as 'python'
+PYTHON="${PYTHON:-python3}"
+if ! "$PYTHON" -c "import sys; assert sys.version_info >= (3,)" > /dev/null 2>&1; then
+    PYTHON=python
+fi
+if ! "$PYTHON" -c "import sys; assert sys.version_info >= (3,)" > /dev/null 2>&1; then
+    echo "ERROR: Python 3 not found (tried python3 and python)"
+    exit 1
+fi
+
 generate_sectors() {
-python3 - <<'PY' "$@"
+"$PYTHON" - <<'PY' "$@"
 import sys, struct
 
 # Constants
@@ -204,7 +218,7 @@ PY
 #              expected 2336-byte-per-sector output to <expected>
 # usage: build_spec_ecm with-header|headerless <raw.bin> <out.ecm> [<expected>]
 build_spec_ecm() {
-python3 - <<'PY' "$@"
+"$PYTHON" - <<'PY' "$@"
 import struct, sys
 
 def init_edc():
@@ -435,7 +449,7 @@ dd if=/dev/urandom of="$CORRUPT_FILE" bs=1024 count=10 2>/dev/null
 "$ECM_BIN" "$CORRUPT_FILE" "$TEST_DIR/corrupt.bin.ecm" 2>&1 || true
 
 # Corrupt the EDC checksum (last 4 bytes)
-python3 -c "
+"$PYTHON" -c "
 with open('$TEST_DIR/corrupt.bin.ecm', 'r+b') as f:
     f.seek(-4, 2)
     f.write(bytes([0xFF, 0xFF, 0xFF, 0xFF]))
@@ -458,6 +472,11 @@ else
             exit 1
         fi
     fi
+fi
+# An image that failed verification must not be left under the requested name
+if [ -e "$TEST_DIR/corrupt_decoded.bin" ]; then
+    echo "FAIL: unecm left the unverified output behind"
+    exit 1
 fi
 
 # Test 9: Invalid magic header
@@ -652,6 +671,147 @@ if "$UNECM_BIN" --no-such-option "$TEST_DIR/legacy.ecm" "$TEST_DIR/legacy_bad.bi
 fi
 echo "PASS: Legacy archive restored with --mode2-2352"
 
+# Test 17: The CUE sheet is written next to the image and players resolve its FILE entry
+# relative to the sheet, so the entry must be the bare file name. Writing the output path as
+# typed made a sheet for outdir/restored.bin point at outdir/outdir/restored.bin.
 echo ""
-echo "=== All roundtrip tests passed (16/16) ==="
+echo "--- Test 17: CUE sheet references the image by file name ---"
+mkdir -p "$TEST_DIR/cue_abs" "$TEST_DIR/cue_rel"
+# Absolute output path (on Windows it also carries a drive letter)
+if ! "$UNECM_BIN" --cue "$TEST_DIR/mode1.bin.ecm" "$TEST_DIR/cue_abs/restored.bin" > /dev/null 2>&1; then
+    echo "FAIL: unecm --cue with an absolute output path failed"
+    exit 1
+fi
+# Relative output path with a directory, run from the test directory
+if ! (cd "$TEST_DIR" && "$UNECM_BIN" --cue mode1.bin.ecm cue_rel/restored.bin > /dev/null 2>&1); then
+    echo "FAIL: unecm --cue with a relative output path failed"
+    exit 1
+fi
+for CUE_SHEET in "$TEST_DIR/cue_abs/restored.bin.cue" "$TEST_DIR/cue_rel/restored.bin.cue"; do
+    FILE_LINE=$(head -n 1 "$CUE_SHEET" | tr -d '\r')
+    if [ "$FILE_LINE" != 'FILE "restored.bin" BINARY' ]; then
+        echo "FAIL: CUE FILE entry is not the bare file name in $CUE_SHEET"
+        echo "  Got: $FILE_LINE"
+        exit 1
+    fi
+done
+echo "PASS: CUE sheet references the image by file name"
+
+# Test 18: Sectors off the 2352-byte grid. The encoder used to test only 2352-byte offsets from
+# the start of the input, so none of these images compressed. Each must now shrink and still
+# roundtrip, through both the batch and the streaming encoder.
+echo ""
+echo "--- Test 18: Sectors behind a prefix, with subchannel data, and without headers ---"
+generate_sectors mode1 20 "$TEST_DIR/grid_m1.bin"
+generate_sectors mode2f1 20 "$TEST_DIR/grid_m2.bin"
+{ printf 'X'; cat "$TEST_DIR/grid_m1.bin"; } > "$TEST_DIR/grid_prefix.bin"
+"$PYTHON" - "$TEST_DIR" <<'PY'
+import sys
+d = sys.argv[1]
+m1 = open(d + "/grid_m1.bin", "rb").read()
+m2 = open(d + "/grid_m2.bin", "rb").read()
+# 2448-byte layout: each raw sector followed by 96 bytes of subchannel data
+with open(d + "/grid_sub.bin", "wb") as f:
+    for i in range(0, len(m1), 2352):
+        f.write(m1[i:i + 2352] + bytes(range(96)))
+# MODE2/2336: raw Mode 2 sectors without their 16-byte sync and header
+with open(d + "/grid_2336.bin", "wb") as f:
+    for i in range(0, len(m2), 2352):
+        f.write(m2[i + 16:i + 2352])
+PY
+for NAME in grid_prefix grid_sub grid_2336; do
+    SRC="$TEST_DIR/$NAME.bin"
+    SRC_SIZE=$(wc -c < "$SRC" | tr -d ' ')
+    SRC_SUM=$(sha256sum "$SRC" | cut -d' ' -f1)
+    "$ECM_BIN" "$SRC" "$TEST_DIR/$NAME.ecm" > /dev/null 2>&1
+    "$ECM_BIN" - - < "$SRC" > "$TEST_DIR/$NAME.stream.ecm" 2> /dev/null
+    for ARCHIVE in "$TEST_DIR/$NAME.ecm" "$TEST_DIR/$NAME.stream.ecm"; do
+        ARCHIVE_SIZE=$(wc -c < "$ARCHIVE" | tr -d ' ')
+        if [ "$ARCHIVE_SIZE" -ge $((SRC_SIZE * 95 / 100)) ]; then
+            echo "FAIL: $ARCHIVE did not compress ($ARCHIVE_SIZE of $SRC_SIZE bytes)"
+            exit 1
+        fi
+        rm -f "$TEST_DIR/$NAME.out"
+        "$UNECM_BIN" "$ARCHIVE" "$TEST_DIR/$NAME.out" > /dev/null 2>&1
+        if [ "$(sha256sum "$TEST_DIR/$NAME.out" | cut -d' ' -f1)" != "$SRC_SUM" ]; then
+            echo "FAIL: $ARCHIVE did not roundtrip"
+            exit 1
+        fi
+    done
+done
+echo "PASS: Off-grid sectors compress and roundtrip in both encoders"
+
+# Test 19: A header-less stream decodes to 2336-byte sectors and its CUE sheet must say so;
+# the same sectors with their literal headers make a 2352-byte image
+echo ""
+echo "--- Test 19: CUE sheet track mode follows the decoded sector size ---"
+"$UNECM_BIN" --cue "$TEST_DIR/spec_2336.ecm" "$TEST_DIR/cue_2336.bin" > /dev/null 2>&1
+"$UNECM_BIN" --cue "$TEST_DIR/spec_raw.ecm" "$TEST_DIR/cue_2352.bin" > /dev/null 2>&1
+TRACK_2336=$(sed -n 2p "$TEST_DIR/cue_2336.bin.cue" | tr -d '\r')
+TRACK_2352=$(sed -n 2p "$TEST_DIR/cue_2352.bin.cue" | tr -d '\r')
+if [ "$TRACK_2336" != "  TRACK 01 MODE2/2336" ] || [ "$TRACK_2352" != "  TRACK 01 MODE2/2352" ]; then
+    echo "FAIL: CUE track modes do not match the decoded sector sizes"
+    echo "  Header-less stream: $TRACK_2336"
+    echo "  With headers:       $TRACK_2352"
+    exit 1
+fi
+echo "PASS: CUE track mode matches the sector size"
+
+# Test 20: Options are recognised anywhere, '--' ends them, and --help/--version succeed.
+# An option after the file names used to become the output name, silently.
+echo ""
+echo "--- Test 20: Option parsing ---"
+cp "$TEST_DIR/mode1.bin.ecm" "$TEST_DIR/opt.bin.ecm"
+(cd "$TEST_DIR" && "$UNECM_BIN" opt.bin.ecm --cue > /dev/null 2>&1)
+if [ -e "$TEST_DIR/--cue" ] || [ ! -f "$TEST_DIR/opt.bin.cue" ]; then
+    echo "FAIL: unecm did not treat a trailing --cue as an option"
+    exit 1
+fi
+(cd "$TEST_DIR" && "$ECM_BIN" "$MODE1_FILE" opt_v.ecm -v > /dev/null 2>&1)
+if [ -e "$TEST_DIR/-v" ] || [ ! -f "$TEST_DIR/opt_v.ecm" ]; then
+    echo "FAIL: ecm did not treat a trailing -v as an option"
+    exit 1
+fi
+cp "$MODE1_FILE" "$TEST_DIR/-dash.bin"
+(cd "$TEST_DIR" && "$ECM_BIN" -- -dash.bin > /dev/null 2>&1)
+if [ ! -f "$TEST_DIR/-dash.bin.ecm" ]; then
+    echo "FAIL: '--' did not let a file name start with '-'"
+    exit 1
+fi
+if "$ECM_BIN" --no-such-option "$MODE1_FILE" "$TEST_DIR/unknown.ecm" > /dev/null 2>&1; then
+    echo "FAIL: ecm accepted an unknown option"
+    exit 1
+fi
+if "$ECM_BIN" "$MODE1_FILE" "$TEST_DIR/a.ecm" "$TEST_DIR/b.ecm" > /dev/null 2>&1; then
+    echo "FAIL: ecm accepted three file names"
+    exit 1
+fi
+if ! "$ECM_BIN" --help 2> /dev/null | grep -q "usage:" ||
+    ! "$UNECM_BIN" -h 2> /dev/null | grep -q -- "--mode2-2352"; then
+    echo "FAIL: --help did not print usage to stdout"
+    exit 1
+fi
+if ! "$ECM_BIN" --version 2> /dev/null | grep -q "^ecm [0-9]" ||
+    ! "$UNECM_BIN" -V 2> /dev/null | grep -q "^unecm [0-9]"; then
+    echo "FAIL: --version did not print the version to stdout"
+    exit 1
+fi
+echo "PASS: Options parsed anywhere, '--', --help and --version work"
+
+# Test 21: A decode that fails part-way must not leave a truncated image behind
+echo ""
+echo "--- Test 21: Failed decodes remove their output ---"
+head -c 1000 "$TEST_DIR/mode1.bin.ecm" > "$TEST_DIR/truncated.ecm"
+if "$UNECM_BIN" "$TEST_DIR/truncated.ecm" "$TEST_DIR/truncated.bin" > /dev/null 2>&1; then
+    echo "FAIL: unecm accepted a truncated archive"
+    exit 1
+fi
+if [ -e "$TEST_DIR/truncated.bin" ]; then
+    echo "FAIL: unecm left a truncated image behind"
+    exit 1
+fi
+echo "PASS: Failed decodes remove their output"
+
+echo ""
+echo "=== All roundtrip tests passed (21/21) ==="
 exit 0
