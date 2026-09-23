@@ -1,0 +1,3 @@
+// Embed the application manifest: resource type 24 is RT_MANIFEST, and id 1 is the manifest
+// the loader applies to the process
+1 24 "utf8.manifest"

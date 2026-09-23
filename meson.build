@@ -36,9 +36,23 @@ eccedc_lib = static_library(
   dependencies: thread_dep,
 )
 
+# Windows: embed a manifest that makes UTF-8 the process code page (Windows 10 1903 and
+# later). The tools use the narrow C runtime API, so without it a file name outside the legacy
+# ANSI code page arrives as '?' and cannot be opened.
+win_resources = []
+if host_machine.system() == 'windows'
+  windows = import('windows')
+  win_resources = windows.compile_resources(
+    'src/windows/utf8.rc',
+    depend_files: files('src/windows/utf8.manifest'),
+    include_directories: include_directories('src/windows'),
+  )
+endif
+
 ecm_exe = executable(
   'ecm',
   'src/ecm.c',
+  win_resources,
   include_directories: [inc, inc_build],
   link_with: eccedc_lib,
   install: true,
@@ -47,6 +61,7 @@ ecm_exe = executable(
 unecm_exe = executable(
   'unecm',
   'src/unecm.c',
+  win_resources,
   include_directories: [inc, inc_build],
   link_with: eccedc_lib,
   install: true,
