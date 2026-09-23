@@ -1,12 +1,17 @@
+# Warnings are errors in development and CI (the justfile and CI pass -Dwerror=true) but not
+# by default, so a new warning from a newer compiler cannot break a distribution build.
+# c2x is the fallback for compilers that implement the C23 features used here under the older
+# name. A list of standards needs Meson 1.3.
 project(
   'ecm',
   'c',
   version: '1.3.3',
   license: 'GPL-2.0-or-later',
+  meson_version: '>=1.3.0',
   default_options: [
-    'c_std=c23',
+    'c_std=c23,c2x',
     'warning_level=2',
-    'werror=true',
+    'werror=false',
     'buildtype=release',
   ],
 )
