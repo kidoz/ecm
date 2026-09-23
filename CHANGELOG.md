@@ -4,6 +4,67 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Record counts beyond the format limit** - The encoder splits runs so that no record count
+  reaches 2^31, which the format declares invalid. Runs used to be split only near 2^32, so
+  inputs with more than 2 GiB of consecutive literal data produced files that a decoder
+  enforcing the limit rejects. `unecm` still reads such files
+- **Sectors off the 2352-byte grid** - Both encoders look for sectors at every byte offset
+  again, as 1.1.0 and the original `ecm` did, and recognise header-less 2336-byte Mode 2
+  bodies. Since 1.3.0 only multiples of 2352 from the start of the input were tested, so one
+  leading byte disabled all compression and MODE2/2336 images or dumps with subchannel data
+  were stored as literal bytes. Window EDCs are rolled forward byte by byte, so repetitive
+  padding does not slow the scan down
+- **Last sector at a buffer boundary** - A sector straddling the end of the 1 MB analysis
+  buffer was stored as literal bytes when most of it was already buffered, which affected the
+  final sector of images whose sector count is one more than a multiple of 445
+- **CUE sheet file reference** - `unecm --cue` names the image in the sheet's `FILE` entry by
+  its file name alone. It used to copy the output path as typed, but the sheet is written next
+  to the image and players resolve the entry relative to the sheet, so decoding to
+  `outdir/restored.bin` produced a sheet pointing at `outdir/outdir/restored.bin`
+- **CUE sheet track mode** - The track mode follows the decoded sector size. Mode 2 records
+  without a literal header in front decode to 2336-byte sectors, and the sheet now says
+  MODE2/2336 for them instead of MODE2/2352
+- **Unicode file names on Windows** - The executables embed a manifest that makes UTF-8 their
+  code page, so file names outside the legacy ANSI code page no longer reach the C runtime as
+  `?` and fail to open. Needs Windows 10 version 1903 or later
+- **Misplaced options** - Both tools recognise options anywhere on the command line, and `--`
+  ends them. An option after the file names used to become the output file name, so
+  `unecm game.bin.ecm --cue` wrote a file called `--cue`. Unknown options and extra file
+  names are errors
+- **Incomplete output left behind** - When encoding or decoding fails, the output file is
+  deleted instead of remaining under the requested name, where a truncated or unverified
+  image could pass for a finished one
+- **Reports** - Byte totals no longer come from the position of a pipe, which reported zero
+  or garbage when piping. Statistics counters are 64-bit, so they no longer wrap above 4 GiB,
+  and the progress line only appears when stderr is a terminal
+
+### Added
+
+- **`-h`/`--help` and `-V`/`--version`** for both tools
+
+### Changed
+
+- **Warnings are no longer errors by default** - A plain `meson setup` builds with
+  `werror=false`, so a new warning from a newer compiler cannot break a distribution build.
+  The `just` recipes pass `-Dwerror=true`
+- **Meson 1.3 or newer** is required. `c_std` falls back to `c2x` for compilers that
+  implement the C23 features used here under the older name
+
+### Development
+
+- **Integration test on Windows** - Meson finds Git for Windows' bash next to `git.exe` and
+  never picks the WSL launcher in System32, which cannot run the Windows binaries. Without a
+  usable bash the test is skipped instead of failing the setup. The script falls back to
+  `python` when `python3` is missing, and it now covers off-grid sectors, CUE track modes,
+  option parsing, and removal of failed output
+- **`just`** - New `test` recipe. The Windows recipes use `build-msvc` and `build-clang` so a
+  directory configured for another compiler is never reused. `clean`, `rebuild` and `wipe`
+  refuse to delete a build directory holding disc images or archives
+- **Arch Linux packaging** - `checkdepends` lists Python, which the integration test in
+  `check()` needs in a clean chroot
+
 ## [1.3.3] - 2026-09-22
 
 ### Added
