@@ -1,8 +1,8 @@
 class Ecm < Formula
   desc "Error Code Modeler - encoder/decoder for CD image ECC/EDC data"
   homepage "https://github.com/kidoz/ecm"
-  url "https://github.com/kidoz/ecm/archive/v1.3.3.tar.gz"
-  sha256 "182c330b8de4f0717964a98920a1fec6379bd0924443cb5b4af5a9e849919e0f"
+  url "https://github.com/kidoz/ecm/archive/v1.3.4.tar.gz"
+  sha256 "c31e6456b1c487b74d714c883026bcb27fd9fce026f5703b034de5c4092970f5"
   license "GPL-2.0-or-later"
   head "https://github.com/kidoz/ecm.git", branch: "master"
 
