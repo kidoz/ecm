@@ -10,14 +10,14 @@
 
 ECM reduces the size of CD image files (BIN, CDI, NRG, CCD, and other raw sector formats) by eliminating redundant Error Correction/Detection Codes (ECC/EDC) from each sector.
 
-The encoder automatically detects sector types and strips predictable data. The decoder regenerates full 2352-byte raw sectors. Compression is **completely lossless**.
+The encoder automatically detects sector types and strips predictable data. The decoder regenerates every sector exactly as it was stored: full 2352-byte raw sectors, or 2336-byte Mode 2 sectors for images that never had sync and header bytes. Compression is **completely lossless**.
 
 > **Note:** "Cooked" ISO files (2048 bytes/sector) contain no ECC/EDC data and will see no size reduction.
 
 ## Features
 
 - **Lossless** - Bit-perfect roundtrip compression/decompression
-- **Automatic detection** - Identifies Mode 1, Mode 2 Form 1/2 sectors
+- **Automatic detection** - Identifies Mode 1 and Mode 2 Form 1/2 sectors at any byte offset, including MODE2/2336 images and raw dumps with subchannel data
 - **Streaming support** - Works with stdin/stdout for pipeline integration
 - **CUE generation** - Optional CUE sheet creation on decode
 - **Cross-platform** - Linux, macOS, Windows
@@ -28,9 +28,10 @@ The encoder automatically detects sector types and strips predictable data. The 
 
 #### Requirements
 
-- C23 compatible compiler (GCC 14+, Clang 18+)
-- [Meson](https://mesonbuild.com/) build system
+- C23 compatible compiler: GCC 14+, Clang 18+, or Visual Studio 2022+ through the native file described below
+- [Meson](https://mesonbuild.com/) 1.3 or newer
 - [Ninja](https://ninja-build.org/) (recommended)
+- For the integration test only: bash and Python 3. Meson skips that test when bash is missing.
 
 #### Build
 
@@ -46,6 +47,9 @@ meson test -C build
 sudo meson install -C build
 ```
 
+Warnings are not errors in a plain `meson setup`, so a newer compiler cannot break a
+release build. Add `-Dwerror=true` when developing; the `just` recipes and CI do.
+
 Or using the [`just`](https://github.com/casey/just) command runner:
 
 ```bash
@@ -54,6 +58,9 @@ just rebuild    # Clean and rebuild
 just test       # Run tests
 just benchmark  # Run performance benchmarks
 ```
+
+`just clean`, `just rebuild` and `just wipe` refuse to delete a build directory that holds
+disc images or archives, since those are not build output.
 
 #### Windows
 
@@ -75,9 +82,14 @@ meson setup build --native-file native/windows-clang.ini
 meson compile -C build
 ```
 
-The equivalent `just` recipes are `just build-windows` (MSVC) and `just build-windows-clang`.
-MSVC has no `nullptr` keyword in C mode yet, so the MSVC native file selects `/std:clatest`
-and maps `nullptr` to `NULL`.
+The equivalent `just` recipes are `just build-windows` (MSVC, in `build-msvc`) and
+`just build-windows-clang` (in `build-clang`), with `test-windows` and `test-windows-clang`
+to run the tests. MSVC has no `nullptr` keyword in C mode yet, so the MSVC native file selects
+`/std:clatest` and maps `nullptr` to `NULL`.
+
+The Windows executables embed a manifest that makes UTF-8 their code page, so file names in
+any script work on Windows 10 version 1903 and later. The integration test needs Git for
+Windows' bash; Meson finds it next to `git.exe` and never uses the WSL launcher.
 
 ### Homebrew (macOS)
 
@@ -86,6 +98,13 @@ formula:
 
 ```bash
 HOMEBREW_DEVELOPER=1 brew install --formula ./packaging/homebrew/ecm.rb
+```
+
+### Arch Linux
+
+```bash
+cd packaging/archlinux
+makepkg -si
 ```
 
 ## Usage
@@ -104,13 +123,19 @@ cat game.bin | ecm - - > out.ecm  # Streaming mode
 
 ```bash
 ecm [-v|--verbose] <input> [output]
+ecm -h|--help | -V|--version
 ```
 
 | Option | Description |
 |--------|-------------|
 | `-v`, `--verbose` | Show sector processing details |
+| `-h`, `--help` | Print usage and exit |
+| `-V`, `--version` | Print the version and exit |
 | `input` | CD image file (BIN, CDI, NRG, CCD, etc.) or `-` for stdin |
 | `output` | ECM file (defaults to `<input>.ecm`) or `-` for stdout |
+
+Options may appear before or after the file names. Put `--` before a file name that starts
+with `-`. Unknown options are errors rather than file names.
 
 ### Decoding
 
@@ -127,15 +152,22 @@ unecm --mode2-2352 old.bin.ecm  # Archive made by ecm 1.2.0-1.3.1 from a raw Mod
 
 ```bash
 unecm [-v|--verbose] [--cue] [--mode2-2352] <input.ecm> [output]
+unecm -h|--help | -V|--version
 ```
 
 | Option | Description |
 |--------|-------------|
 | `-v`, `--verbose` | Show record decoding details |
-| `--cue` | Generate a CUE sheet file |
+| `--cue` | Write a single-track CUE sheet as `<output>.cue`. It names the image by file name, and its track mode follows the decoded sector size: MODE1/2352, MODE2/2352, or MODE2/2336 |
+| `-h`, `--help` | Print usage and exit |
+| `-V`, `--version` | Print the version and exit |
 | `--mode2-2352` | Expand Mode 2 records to 2352-byte sectors with regenerated sync, address and mode, as versions 1.2.0 to 1.3.1 did. Use it only for archives those versions made from raw Mode 2 images; see [doc/FORMAT.md](doc/FORMAT.md) |
 | `input.ecm` | ECM file (must end in `.ecm`) or `-` for stdin |
 | `output` | Output file (defaults to input without `.ecm`) or `-` for stdout |
+
+Options may appear anywhere, as with `ecm`. When a run fails, for example on a corrupt or
+truncated archive, either tool deletes the incomplete output file rather than leave a
+damaged image under the requested name.
 
 ## How It Works
 
@@ -157,9 +189,13 @@ ECM automatically selects the optimal mode based on input type:
 | Mode | Input Type | Buffer | Best For |
 |------|-----------|--------|----------|
 | **Batch** | Regular files | ~1 MB | Large files, best compression |
-| **Streaming** | stdin/pipes | ~2.4 KB | Pipelines, memory-constrained |
+| **Streaming** | stdin/pipes | ~256 KB | Pipelines |
 
 Batch mode groups consecutive same-type sectors for better compression ratios. Use regular files when possible for best results.
+
+Both modes look for sectors at every byte offset, as the original ECM tools did, so images with
+a prefix, with 2336-byte Mode 2 sectors, or with subchannel data after each sector still
+compress.
 
 ## File Format
 

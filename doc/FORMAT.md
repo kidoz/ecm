@@ -192,6 +192,26 @@ and the decoded image is byte-for-byte identical to the input. Streams written b
 decode with the original `unecm`, and streams written by the original `ecm` decode with this
 tool.
 
+### Sector Detection
+
+Like the original `ecm`, the encoder looks for a sector at every byte offset rather than only
+at multiples of 2352. At each offset it first tests for a raw 2352-byte sector with a sync
+pattern, then for a header-less 2336-byte Mode 2 body. Anything that passes neither test is
+stored as literal bytes. This keeps sectors behind an odd-sized prefix, MODE2/2336 images, and
+dumps with extra bytes after each sector compressible. A region of 2336 zero bytes is a valid
+Mode 2 Form 1 body, so zero padding is stored as type 2 records; it still decodes exactly.
+
+Versions 1.3.0 to 1.3.3 only tested offsets that were multiples of 2352 from the start of the
+input. Their files decode normally, but the same inputs now compress better.
+
+### Record Counts
+
+The encoder never writes a count of 2^31 or more: runs are split so that every record stays
+within the limit above. Versions 1.3.1 to 1.3.3 only split runs near 2^32, so their archives
+of inputs with more than 2 GiB of consecutive literal data contain larger literal counts.
+The decoder still accepts such counts so that those files remain readable, but decoders that
+enforce the limit reject them. Re-encoding the original image produces a conforming file.
+
 ### Files From Versions 1.2.0 to 1.3.1
 
 Those versions dropped the 16 header bytes when encoding raw Mode 2 sectors and had the
