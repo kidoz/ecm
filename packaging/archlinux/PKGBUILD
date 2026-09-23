@@ -1,13 +1,15 @@
 # Maintainer: Aleksandr Pavlov <ckidoz@gmail.com>
 pkgname=ecm
 pkgver=1.3.3
-pkgrel=1
+pkgrel=2
 pkgdesc="Error Code Modeler - encoder/decoder for CD image ECC/EDC data"
 arch=('x86_64')
 url="https://github.com/kidoz/ecm"
 license=('GPL-2.0-or-later')
 depends=('glibc')
 makedepends=('meson' 'ninja')
+# The integration test in check() builds its fixtures with Python
+checkdepends=('python')
 source=("${pkgname}-${pkgver}.tar.gz::${url}/archive/v${pkgver}.tar.gz")
 sha256sums=('182c330b8de4f0717964a98920a1fec6379bd0924443cb5b4af5a9e849919e0f')
 
