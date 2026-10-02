@@ -27,6 +27,11 @@ All notable changes to this project will be documented in this file.
 - **Integration tests run on Python 3** - The 25-test integration suite is now
   `tests/roundtrip_test.py`, replacing the bash script. It runs natively on Windows without
   Git Bash, and its fixtures and checks share one interpreter
+- **Documentation follows Diátaxis** - The user-facing docs under `doc/` are reorganized
+  into tutorials, how-to guides, reference, and explanation, one mode per page. The format
+  specification moves to `doc/reference/format.md`, compatibility and version history to
+  `doc/explanation/compatibility.md`, and the CLI tables to `doc/reference/cli.md`;
+  `README.md` is now a landing page that links to all of them
 
 ## [1.3.4] - 2026-09-23
 
