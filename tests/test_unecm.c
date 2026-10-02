@@ -241,7 +241,8 @@ void test_eccedc_generate_mode2_form2(void) {
 }
 
 /*
- * Test: write_cue_file() appends .cue and selects Mode 1 when no Mode 2 sectors are seen
+ * Test: write_cue_file() writes the given sheet path and selects Mode 1 when no Mode 2
+ * sectors are seen
  */
 void test_write_cue_file_mode1(void) {
     TEST(write_cue_file_mode1);
@@ -249,7 +250,7 @@ void test_write_cue_file_mode1(void) {
     decode_stats_t stats = {.saw_mode1 = true};
     const char *outname = "test_output_mode1.bin";
 
-    ASSERT_EQ(0, write_cue_file(outname, &stats));
+    ASSERT_EQ(0, write_cue_file("test_output_mode1.bin.cue", outname, &stats));
 
     FILE *cue = fopen("test_output_mode1.bin.cue", "r");
     ASSERT_TRUE(cue != nullptr);
@@ -275,7 +276,7 @@ void test_write_cue_file_mode2(void) {
     decode_stats_t stats = {.saw_mode2_raw = true};
     const char *outname = "test_output_mode2.bin";
 
-    ASSERT_EQ(0, write_cue_file(outname, &stats));
+    ASSERT_EQ(0, write_cue_file("test_output_mode2.bin.cue", outname, &stats));
 
     FILE *cue = fopen("test_output_mode2.bin.cue", "r");
     ASSERT_TRUE(cue != nullptr);

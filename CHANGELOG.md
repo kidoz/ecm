@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **CUE sheet path safety** - `unecm --cue` validates the generated `<output>.cue` path before
+  opening it, with the same identity check the image gets. A sheet naming the same file as the
+  input archive or the output image, through a hard link or symlink, is refused instead of
+  truncating that file after a successful decode, and a symlinked sheet path is refused outright
+- **Symlinked outputs refused** - Both tools reject an output path whose final component is a
+  symlink. `fopen` would truncate the link target while a failed-run cleanup would remove only
+  the link, leaving partial bytes under the target's name. On Windows only a symlink or
+  junction reparse point counts; cloud placeholder files are ordinary files here
+- **`--cue` misuse is an error** - Combining `--cue` with a stdout output, or with an image name
+  a CUE `FILE` line cannot hold (a quote or a newline; the format has no escaping), fails with a
+  clear message instead of silently skipping the sheet or writing a corrupt one
 ## [1.3.4] - 2026-09-23
 
 ### Fixed
@@ -113,7 +126,7 @@ All notable changes to this project will be documented in this file.
 
 - Files produced by versions 1.2.0 to 1.3.1 from raw Mode 2 images now decode to 2336-byte
   sectors, as the original `unecm` would, rather than to 2352-byte sectors with generated
-  headers (see `doc/FORMAT.md`, "Files From Versions 1.2.0 to 1.3.1")
+  headers (see `doc/explanation/compatibility.md`, "Files from versions 1.2.0 to 1.3.1")
 - **Packaging** - PKGBUILD and Homebrew formula point at the 1.3.1 release; the README
   installs the formula from this repository with Homebrew developer mode instead of a
   non-existent cask

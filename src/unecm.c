@@ -401,27 +401,20 @@ static const char *cue_track_mode(const decode_stats_t *stats) {
  * The sheet is created next to the image as <output>.cue, and players resolve its FILE entry
  * relative to the sheet, so the entry names the image by its file name alone. The output
  * path as typed would point nowhere once it contains a directory.
+ *
+ * main() validates cuefilename before calling: it must not name the same file as the input
+ * or the image (which opening the sheet would truncate), must not be a symlink, and the
+ * image's base name must be representable in a sheet.
  */
-static int write_cue_file(const char *outfilename, const decode_stats_t *stats) {
-    size_t outlen = strlen(outfilename);
-    char *cuefilename = nullptr;
+static int write_cue_file(const char *cuefilename, const char *outfilename,
+                          const decode_stats_t *stats) {
     FILE *cuefile = nullptr;
     int result = 0;
-
-    cuefilename = malloc(outlen + 5);
-    if (!cuefilename) {
-        fprintf(stderr, "Error: failed to allocate cue filename\n");
-        return 1;
-    }
-
-    memcpy(cuefilename, outfilename, outlen);
-    memcpy(cuefilename + outlen, ".cue", 5);
 
     cuefile = fopen(cuefilename, "wt");
     if (!cuefile) {
         perror(cuefilename);
-        result = 1;
-        goto cleanup;
+        return 1;
     }
 
     fprintf(cuefile, "FILE \"%s\" BINARY\n", path_basename(outfilename));
@@ -441,7 +434,6 @@ static int write_cue_file(const char *outfilename, const decode_stats_t *stats) 
     fprintf(stderr, "Created CUE file: %s\n", cuefilename);
 
 cleanup:
-    free(cuefilename);
     return result;
 }
 
@@ -450,6 +442,19 @@ cleanup:
  */
 static bool is_stdio(const char *filename) {
     return filename[0] == '-' && filename[1] == '\0';
+}
+
+/*
+ * Build the CUE sheet path for an output image: <output>.cue
+ */
+static char *cue_path_for(const char *outfilename) {
+    size_t outlen = strlen(outfilename);
+    char *cuefilename = malloc(outlen + 5);
+    if (cuefilename) {
+        memcpy(cuefilename, outfilename, outlen);
+        memcpy(cuefilename + outlen, ".cue", 5);
+    }
+    return cuefilename;
 }
 
 static void usage(FILE *f, const char *prog) {
@@ -468,6 +473,7 @@ int main(int argc, char **argv) {
     bool options_done = false;
     const char *infilename;
     char *outfilename = nullptr;
+    char *cuefilename = nullptr;
     bool outfilename_allocated = false;
     bool out_is_file = false;
     bool createcue = false;
@@ -552,6 +558,13 @@ int main(int argc, char **argv) {
 
     fprintf(stderr, "Decoding %s to %s.\n", infilename, outfilename);
 
+    /* A sheet is written next to the image, so a decode to stdout cannot produce one */
+    if (createcue && is_stdio(outfilename)) {
+        fprintf(stderr, "Error: --cue requires a file output, not stdout\n");
+        result = 1;
+        goto cleanup;
+    }
+
     /* Open input */
     if (is_stdio(infilename)) {
         fin = stdin;
@@ -574,6 +587,52 @@ int main(int argc, char **argv) {
         fprintf(stderr, "Error: input and output are the same file: %s\n", outfilename);
         result = 1;
         goto cleanup;
+    }
+
+    /* A symlink would send the truncation into the target while a later remove() would
+     * delete only the link, so the target would keep the partial bytes of a failed run */
+    if (!is_stdio(outfilename) && path_is_symlink(outfilename)) {
+        fprintf(stderr, "Error: output is a symlink: %s\n", outfilename);
+        result = 1;
+        goto cleanup;
+    }
+
+    /* The sheet name is derived from the output, so validate it before opening anything
+     * truncating. The sheet must not land on the input archive or the image (which
+     * opening the sheet would destroy after a successful decode), nor pass through a
+     * symlink, and a CUE FILE line can hold neither a quote nor a newline. The image
+     * keeps the inode outfilename names now, because a truncating open does not replace
+     * the inode, so a path comparison is exact. */
+    if (createcue) {
+        cuefilename = cue_path_for(outfilename);
+        if (!cuefilename) {
+            fprintf(stderr, "Error: failed to allocate cue filename\n");
+            result = 1;
+            goto cleanup;
+        }
+        if (file_is_same_as_path(fin, cuefilename)) {
+            fprintf(stderr, "Error: CUE sheet and input are the same file: %s\n", cuefilename);
+            result = 1;
+            goto cleanup;
+        }
+        if (paths_same_file(outfilename, cuefilename)) {
+            fprintf(stderr, "Error: CUE sheet and output are the same file: %s\n", cuefilename);
+            result = 1;
+            goto cleanup;
+        }
+        if (path_is_symlink(cuefilename)) {
+            fprintf(stderr, "Error: CUE sheet path is a symlink: %s\n", cuefilename);
+            result = 1;
+            goto cleanup;
+        }
+        if (strpbrk(path_basename(outfilename), "\"\r\n") != nullptr) {
+            fprintf(stderr,
+                    "Error: output file name cannot appear in a CUE sheet "
+                    "(quote or newline): %s\n",
+                    path_basename(outfilename));
+            result = 1;
+            goto cleanup;
+        }
     }
 
     /* Open output */
@@ -608,8 +667,8 @@ int main(int argc, char **argv) {
     }
 
     /* Write CUE file if requested */
-    if (result == 0 && createcue && !is_stdio(outfilename)) {
-        result = write_cue_file(outfilename, &stats);
+    if (result == 0 && createcue) {
+        result = write_cue_file(cuefilename, outfilename, &stats);
     }
 
 cleanup:
@@ -619,6 +678,7 @@ cleanup:
     if (outfilename_allocated) {
         free(outfilename);
     }
+    free(cuefilename);
 
     return result;
 }

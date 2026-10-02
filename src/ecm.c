@@ -941,6 +941,14 @@ int main(int argc, char **argv) {
         goto cleanup;
     }
 
+    /* A symlink would send the truncation into the target while a later remove() would
+     * delete only the link, so the target would keep the partial bytes of a failed run */
+    if (!is_stdio(outfilename) && path_is_symlink(outfilename)) {
+        fprintf(stderr, "Error: output is a symlink: %s\n", outfilename);
+        result = 1;
+        goto cleanup;
+    }
+
     /* Open output */
     if (is_stdio(outfilename)) {
         fout = stdout;

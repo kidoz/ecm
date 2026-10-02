@@ -266,6 +266,30 @@ void sector_copy_subheader(uint8_t *sector);
 [[nodiscard]] bool file_is_same_as_path(FILE *f, const char *path);
 
 /*
+ * Check whether two paths name the same underlying file, following symlinks on both.
+ * Unlike file_is_same_as_path() neither side is already open, so both are opened by path.
+ *
+ * @param a  First path (must not be null)
+ * @param b  Second path (need not exist)
+ * @return   true only when both resolve to the same file; false on any error
+ */
+[[nodiscard]] bool paths_same_file(const char *a, const char *b);
+
+/*
+ * Check whether the final component of a path is a symlink. On Windows that means a symlink
+ * or junction reparse point; other reparse points, such as cloud placeholder files, behave
+ * like ordinary files here and are not refused.
+ * An output about to be opened with a truncating mode is refused when this is true, because
+ * fopen would truncate the link target while a later remove() would delete only the link.
+ * Intermediate directory symlinks are followed and do not count.
+ *
+ * @param path  Path to test (must not be null)
+ * @return      true only for an existing symlink; false for any other file kind, a missing
+ *              path, or an error
+ */
+[[nodiscard]] bool path_is_symlink(const char *path);
+
+/*
  * Return the final component of a path, as a pointer into path.
  * On Windows both slashes and a drive prefix ("C:image.bin") separate components, and
  * double-byte ANSI code pages are respected so a trail byte equal to '\' is not taken for a

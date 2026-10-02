@@ -321,10 +321,19 @@ void sector_copy_subheader(uint8_t *sector) {
 }
 
 #if defined(_WIN32) || defined(_WIN64)
+static bool handles_same_file(HANDLE ha, HANDLE hb) {
+    BY_HANDLE_FILE_INFORMATION fa, fb;
+    return GetFileInformationByHandle(ha, &fa) && GetFileInformationByHandle(hb, &fb) &&
+           fa.dwVolumeSerialNumber == fb.dwVolumeSerialNumber &&
+           fa.nFileIndexHigh == fb.nFileIndexHigh && fa.nFileIndexLow == fb.nFileIndexLow;
+}
+#endif
+
 [[nodiscard]] bool file_is_same_as_path(FILE *f, const char *path) {
     if (f == nullptr || path == nullptr) {
         return false;
     }
+#if defined(_WIN32) || defined(_WIN64)
     HANDLE hf = (HANDLE)_get_osfhandle(_fileno(f));
     if (hf == INVALID_HANDLE_VALUE) {
         return false;
@@ -336,26 +345,79 @@ void sector_copy_subheader(uint8_t *sector) {
     if (hp == INVALID_HANDLE_VALUE) {
         return false;
     }
-    BY_HANDLE_FILE_INFORMATION a, b;
-    bool same = GetFileInformationByHandle(hf, &a) && GetFileInformationByHandle(hp, &b) &&
-                a.dwVolumeSerialNumber == b.dwVolumeSerialNumber &&
-                a.nFileIndexHigh == b.nFileIndexHigh && a.nFileIndexLow == b.nFileIndexLow;
+    bool same = handles_same_file(hf, hp);
     CloseHandle(hp);
     return same;
-}
 #else
-[[nodiscard]] bool file_is_same_as_path(FILE *f, const char *path) {
-    if (f == nullptr || path == nullptr) {
-        return false;
-    }
     struct stat a, b;
     if (fstat(fileno(f), &a) != 0 || stat(path, &b) != 0) {
         return false;
     }
     /* Device + inode identifies the file itself, so symlinks and hard links both match */
     return a.st_dev == b.st_dev && a.st_ino == b.st_ino;
+#endif
+}
+
+[[nodiscard]] bool paths_same_file(const char *a, const char *b) {
+    if (a == nullptr || b == nullptr) {
+        return false;
+    }
+#if defined(_WIN32) || defined(_WIN64)
+    HANDLE ha = CreateFileA(a, 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (ha == INVALID_HANDLE_VALUE) {
+        return false;
+    }
+    HANDLE hb = CreateFileA(b, 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (hb == INVALID_HANDLE_VALUE) {
+        CloseHandle(ha);
+        return false;
+    }
+    bool same = handles_same_file(ha, hb);
+    CloseHandle(ha);
+    CloseHandle(hb);
+    return same;
+#else
+    struct stat sa, sb;
+    if (stat(a, &sa) != 0 || stat(b, &sb) != 0) {
+        return false;
+    }
+    return sa.st_dev == sb.st_dev && sa.st_ino == sb.st_ino;
+#endif
+}
+
+#if defined(_WIN32) || defined(_WIN64)
+/* Only a link redirects the open. Cloud placeholder files and other reparse points are
+ * ordinary files for this purpose and must not be refused. The tag of a reparse point is
+ * only reported by a directory scan, not by GetFileAttributes */
+static bool path_is_link_reparse_point(const char *path) {
+    WIN32_FIND_DATAA info;
+    HANDLE h = FindFirstFileA(path, &info);
+    if (h == INVALID_HANDLE_VALUE) {
+        return false;
+    }
+    FindClose(h);
+    if ((info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) == 0) {
+        return false;
+    }
+    return info.dwReserved0 == IO_REPARSE_TAG_SYMLINK ||
+           info.dwReserved0 == IO_REPARSE_TAG_MOUNT_POINT;
 }
 #endif
+
+[[nodiscard]] bool path_is_symlink(const char *path) {
+    if (path == nullptr) {
+        return false;
+    }
+#if defined(_WIN32) || defined(_WIN64)
+    return path_is_link_reparse_point(path);
+#else
+    struct stat st;
+    /* lstat, not stat: the question is about the final component itself */
+    return lstat(path, &st) == 0 && S_ISLNK(st.st_mode);
+#endif
+}
 
 [[nodiscard]] const char *path_basename(const char *path) {
     if (path == nullptr) {

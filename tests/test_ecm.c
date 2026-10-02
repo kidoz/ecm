@@ -897,6 +897,75 @@ void test_file_is_same_as_path(void) {
 }
 
 /*
+ * Test: path_is_symlink() recognises a symlink and lets a regular file, a directory, and a
+ * missing path through
+ */
+void test_path_is_symlink(void) {
+    TEST(path_is_symlink);
+
+    const char *path = "test_symlink_target.bin";
+    const char *link = "test_symlink_link.bin";
+
+    FILE *f = fopen(path, "wb");
+    ASSERT_TRUE(f != nullptr);
+    fclose(f);
+
+    ASSERT_FALSE(path_is_symlink(path));
+    ASSERT_FALSE(path_is_symlink("."));
+    ASSERT_FALSE(path_is_symlink("test_symlink_missing.bin"));
+
+#if !defined(_WIN32) && !defined(_WIN64)
+    remove(link);
+    ASSERT_EQ(0, symlink(path, link));
+    ASSERT_TRUE(path_is_symlink(link));
+    remove(link);
+#endif
+    remove(path);
+
+    PASS();
+}
+
+/*
+ * Test: paths_same_file() recognises the same file by its own path and through a symlink or
+ * hard link, and rejects a different or missing file
+ */
+void test_paths_same_file(void) {
+    TEST(paths_same_file);
+
+    const char *path = "test_paths_a.bin";
+    const char *other = "test_paths_b.bin";
+    const char *alias = "test_paths.lnk";
+
+    FILE *f = fopen(path, "wb");
+    ASSERT_TRUE(f != nullptr);
+    fputc('x', f);
+    fclose(f);
+    f = fopen(other, "wb");
+    ASSERT_TRUE(f != nullptr);
+    fputc('y', f);
+    fclose(f);
+
+    ASSERT_TRUE(paths_same_file(path, path));
+    ASSERT_FALSE(paths_same_file(path, other));
+    ASSERT_FALSE(paths_same_file(path, "test_paths_missing.bin"));
+#if !defined(_WIN32) && !defined(_WIN64)
+    remove(alias);
+    ASSERT_EQ(0, symlink(path, alias));
+    ASSERT_TRUE(paths_same_file(path, alias));
+    remove(alias);
+    ASSERT_EQ(0, link(path, alias));
+    ASSERT_TRUE(paths_same_file(path, alias));
+    remove(alias);
+#else
+    (void)alias;
+#endif
+    remove(path);
+    remove(other);
+
+    PASS();
+}
+
+/*
  * Encode data with the batch or streaming encoder. Returns the archive positioned just after
  * the magic, or nullptr on failure.
  */
@@ -1223,6 +1292,8 @@ int main(int argc, char **argv) {
     TEST_CATEGORY("\nI/O Safety Tests");
     test_streaming_rejects_read_error();
     test_file_is_same_as_path();
+    test_path_is_symlink();
+    test_paths_same_file();
     test_stream_set_binary();
 
     TEST_SUITE_END();
