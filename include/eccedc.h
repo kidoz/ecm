@@ -290,6 +290,16 @@ void sector_copy_subheader(uint8_t *sector);
 [[nodiscard]] bool path_is_symlink(const char *path);
 
 /*
+ * Empty the file a path names, without removing or creating it: truncate it to zero bytes.
+ * A failed run calls this before remove(), so another hard link to the same inode cannot
+ * keep a partially written image under its own name.
+ *
+ * @param path  Path to empty (must not be null)
+ * @return      true when the file was emptied; false on any error, with the file left as it was
+ */
+[[nodiscard]] bool discard_file_contents(const char *path);
+
+/*
  * Return the final component of a path, as a pointer into path.
  * On Windows both slashes and a drive prefix ("C:image.bin") separate components, and
  * double-byte ANSI code pages are respected so a trail byte equal to '\' is not taken for a

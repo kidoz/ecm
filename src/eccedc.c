@@ -419,6 +419,30 @@ static bool path_is_link_reparse_point(const char *path) {
 #endif
 }
 
+[[nodiscard]] bool discard_file_contents(const char *path) {
+    if (path == nullptr) {
+        return false;
+    }
+#if defined(_WIN32) || defined(_WIN64)
+    /* OPEN_EXISTING fails when the path is missing, so this never creates a file; the
+     * caller has refused a symlinked path, so this lands on the file the run wrote */
+    HANDLE h =
+        CreateFileA(path, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                    nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) {
+        return false;
+    }
+    bool emptied = SetFilePointer(h, 0, nullptr, FILE_BEGIN) != INVALID_SET_FILE_POINTER &&
+                   SetEndOfFile(h) != 0;
+    CloseHandle(h);
+    return emptied;
+#else
+    /* truncate() fails when the path is missing, so this never creates a file; it follows
+     * a symlink, which the caller has already refused */
+    return truncate(path, 0) == 0;
+#endif
+}
+
 [[nodiscard]] const char *path_basename(const char *path) {
     if (path == nullptr) {
         return nullptr;

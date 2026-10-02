@@ -966,6 +966,37 @@ void test_paths_same_file(void) {
 }
 
 /*
+ * Test: discard_file_contents() empties a file in place and fails on a missing path
+ */
+void test_discard_file_contents(void) {
+    TEST(discard_file_contents);
+
+    const char *path = "test_discard.bin";
+
+    FILE *f = fopen(path, "wb");
+    ASSERT_TRUE(f != nullptr);
+    fputs("data", f);
+    fclose(f);
+
+    ASSERT_TRUE(discard_file_contents(path));
+    f = fopen(path, "rb");
+    ASSERT_TRUE(f != nullptr);
+    ASSERT_EQ(EOF, fgetc(f));
+    fclose(f);
+
+    remove("test_discard_missing.bin");
+    ASSERT_FALSE(discard_file_contents("test_discard_missing.bin"));
+    f = fopen("test_discard_missing.bin", "rb");
+    if (f != nullptr) {
+        fclose(f);
+    }
+    ASSERT_NULL(f);
+    remove(path);
+
+    PASS();
+}
+
+/*
  * Encode data with the batch or streaming encoder. Returns the archive positioned just after
  * the magic, or nullptr on failure.
  */
@@ -1294,6 +1325,7 @@ int main(int argc, char **argv) {
     test_file_is_same_as_path();
     test_path_is_symlink();
     test_paths_same_file();
+    test_discard_file_contents();
     test_stream_set_binary();
 
     TEST_SUITE_END();

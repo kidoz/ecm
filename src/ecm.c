@@ -472,7 +472,6 @@ static void print_report(const uint64_t typetally[4], int64_t total_in, FILE *ou
     } else {
         fprintf(stderr, "Encoded %lld bytes\n", (long long)total_in);
     }
-    fprintf(stderr, "Done.\n");
 }
 
 /*
@@ -980,9 +979,25 @@ int main(int argc, char **argv) {
     }
     fout = nullptr;
 
-    /* A truncated archive under the requested name would pass for a finished one */
-    if (result != 0 && out_is_file && remove(outfilename) == 0) {
-        fprintf(stderr, "Removed incomplete output %s\n", outfilename);
+    /* A truncated archive under the requested name would pass for a finished one, and a
+     * hard link to it would keep the partial bytes under its own name, so empty the file
+     * itself before unlinking the requested name */
+    if (result != 0 && out_is_file) {
+        if (!discard_file_contents(outfilename)) {
+            fprintf(stderr, "Error: failed to empty incomplete output %s: %s\n", outfilename,
+                    strerror(errno));
+        }
+        if (remove(outfilename) == 0) {
+            fprintf(stderr, "Removed incomplete output %s\n", outfilename);
+        } else {
+            fprintf(stderr, "Error: failed to remove incomplete output %s: %s\n", outfilename,
+                    strerror(errno));
+        }
+    }
+
+    /* Only a run whose bytes are fully on disk has finished */
+    if (result == 0) {
+        fprintf(stderr, "Done.\n");
     }
 
 cleanup:

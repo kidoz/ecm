@@ -17,6 +17,11 @@ All notable changes to this project will be documented in this file.
 - **`--cue` misuse is an error** - Combining `--cue` with a stdout output, or with an image name
   a CUE `FILE` line cannot hold (a quote or a newline; the format has no escaping), fails with a
   clear message instead of silently skipping the sheet or writing a corrupt one
+- **Incomplete-output cleanup** - A failed run empties the output file before removing it, so
+  another hard link to the same inode cannot keep a partially written image under its own
+  name. A failed `remove` is reported instead of passing silently, and the success line
+  (`Done.`) is printed only after the final flush succeeds
+
 ## [1.3.4] - 2026-09-23
 
 ### Fixed

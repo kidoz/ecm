@@ -5,6 +5,7 @@
 #define _FILE_OFFSET_BITS 64
 #endif
 
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -363,7 +364,6 @@ static int unecmify(FILE *in, FILE *out, decode_stats_t *stats, bool is_stdin, b
         goto corrupt;
     }
 
-    fprintf(stderr, "Done; file is OK\n");
     return 0;
 
 uneof:
@@ -661,14 +661,30 @@ int main(int argc, char **argv) {
     }
     fout = nullptr;
 
-    /* A truncated or unverified image under the requested name would pass for a good one */
-    if (result != 0 && out_is_file && remove(outfilename) == 0) {
-        fprintf(stderr, "Removed incomplete output %s\n", outfilename);
+    /* A truncated or unverified image under the requested name would pass for a good one,
+     * and a hard link to it would keep the partial bytes under its own name, so empty the
+     * file itself before unlinking the requested name */
+    if (result != 0 && out_is_file) {
+        if (!discard_file_contents(outfilename)) {
+            fprintf(stderr, "Error: failed to empty incomplete output %s: %s\n", outfilename,
+                    strerror(errno));
+        }
+        if (remove(outfilename) == 0) {
+            fprintf(stderr, "Removed incomplete output %s\n", outfilename);
+        } else {
+            fprintf(stderr, "Error: failed to remove incomplete output %s: %s\n", outfilename,
+                    strerror(errno));
+        }
     }
 
     /* Write CUE file if requested */
     if (result == 0 && createcue) {
         result = write_cue_file(cuefilename, outfilename, &stats);
+    }
+
+    /* Only a run whose bytes are fully on disk has finished */
+    if (result == 0) {
+        fprintf(stderr, "Done; file is OK\n");
     }
 
 cleanup:
