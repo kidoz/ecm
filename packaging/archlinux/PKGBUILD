@@ -8,7 +8,7 @@ url="https://github.com/kidoz/ecm"
 license=('GPL-2.0-or-later')
 depends=('glibc')
 makedepends=('meson' 'ninja')
-# The integration test in check() builds its fixtures with Python
+# The integration test in check() runs on Python 3
 checkdepends=('python')
 source=("${pkgname}-${pkgver}.tar.gz::${url}/archive/v${pkgver}.tar.gz")
 sha256sums=('c31e6456b1c487b74d714c883026bcb27fd9fce026f5703b034de5c4092970f5')

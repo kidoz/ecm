@@ -22,6 +22,12 @@ All notable changes to this project will be documented in this file.
   name. A failed `remove` is reported instead of passing silently, and the success line
   (`Done.`) is printed only after the final flush succeeds
 
+### Changed
+
+- **Integration tests run on Python 3** - The 25-test integration suite is now
+  `tests/roundtrip_test.py`, replacing the bash script. It runs natively on Windows without
+  Git Bash, and its fixtures and checks share one interpreter
+
 ## [1.3.4] - 2026-09-23
 
 ### Fixed
